@@ -1,6 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards #-}
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving #-}
 
 {-# LINE 6 "Main.vhs" #-}  --TODO: sub
 
@@ -56,7 +56,9 @@ import qualified Protocol
 import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSeat, sit)
 import Base
 
+#ifndef LOCAL
 import Paths_nosteps
+#endif
 
 ----------------------------------------------------------------
 
@@ -85,11 +87,12 @@ TODO:
   make move illegal but still draw it when arrowset modified
   logging
   harlog the shown position (after current move)
-  when watching game, don't have time for move before last
   next, prev variation key
   grabbing arrows from empty squares doesn't work for inferred arrows
+  don't remove arrows when move added
+  kill threads on game end
 
-  change error calls to something else         *
+  change error calls to something else
 -}
 
 ----------------------------------------------------------------
@@ -154,8 +157,47 @@ setUsernameAndPassword u p = do
 saveSettings :: IO ()
 saveSettings = readTVarIO (get conf) >>= Settings.saveSettings Settings.emptyDefaultConfig settingsPlace
 
-----------------------------------------------------------------
+keyBindings :: [(Settings.Setting ([Modifier], KeyVal), String, Maybe (ButtonSet -> Button))]
+keyBindings = map (\(a,b,c,d,e) -> (Settings.Setting a (b, keyFromName (fromString c)), d, e))
+                  [("send-key", [], "s", "Send move", Just sendButton)
+                  ,("resign-key", [], "r", "Resign", Just resignButton)
+                  ,("plan-key", [], "space", "Enter plan move", Just planButton)
+                  ,("clear-key", [], "Escape", "Clear arrows", Nothing)
+                  ,("left-key", [], "Left", "Previous move", Just leftButton)
+                  ,("right-key", [], "Right", "Next move", Just rightButton)
+                  ,("up-key", [], "Up", "Go to game start", Just upButton)
+                  ,("down-key", [], "Down", "Go to game end", Just downButton)
+                  ,("current-key", [], "c", "Go to current position", Just currentButton)
+                  ,("delete-node-key", [], "BackSpace", "Remove plan move", Just deleteNodeButton)
+                  ,("delete-line-key", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", Nothing)
+                  ,("delete-all-key", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", Just deleteAllButton)
+                  ]
 
+deriving instance Read Modifier
+
+anyM :: Monad m => [m Bool] -> m Bool
+anyM = foldr f (return False)
+  where f x y = x >>= \case
+          True -> return True
+          False -> y
+
+initKeyActions :: Window -> ButtonSet -> IO [AddHandler ()]
+initKeyActions w bs = do
+  l <- mapM (const newAddHandler) keyBindings
+  forM_ (zip l keyBindings) $ \((_, fire), (_, _, mb)) -> forM_ mb $ \b -> b bs `on` buttonActivated $ fire ()
+  w `on` keyPressEvent $ do
+    k <- eventKeyVal
+    m <- eventModifier
+    let f (_, fire) (s, _, _) = do
+          (m', k') <- getSetting s
+          if k == k' && elem m (permutations m')
+            then do {fire (); return True}
+            else return False
+    liftIO $ anyM $ zipWith f l keyBindings
+  return $ map fst l
+
+----------------------------------------------------------------
+  
 entryAccessor :: String -> IO (HBox, IO String, String -> IO ())
 entryAccessor label = do
   box <- hBoxNew False 5
@@ -333,11 +375,6 @@ drawTrappedPiece surface (x,y) n question
         showText "?"
         restore
   where (u,v) = trappedPieceSquares !! n
-
--- drawTrappedPieces :: Array Piece Surface -> Map Square [(Piece, Maybe Bool)] -> Render ()
--- drawTrappedPieces icons m = forM_ (Map.assocs m)
---                                   $ \(sq, pieces) -> sequence_ $ zipWith (\(p,b) i -> drawTrappedPiece (icons ! p) sq i b)
---                                                                          pieces [0..]
 
 drawNonsetup (node :: Maybe GameTreeNode)
              (arrows :: [Arrow])
@@ -619,7 +656,6 @@ currentColour, viewColour :: (Double, Double, Double)
 currentColour = (0, 0.7, 0)
 viewColour = (0.9, 0, 0)
 
--- TODO: avoid crossings
 placeTree :: Forest a -> [Int] -> (Map Int [([Int], Double)], Double)
 placeTree forest currentPos = f [([], forest)] 0 (Map.empty, 0)
   where
@@ -901,10 +937,21 @@ onChanges b = mdo
   reactimate' =<< changes b
 --onChanges = (>>= reactimate') . changes
 
+data ButtonSet = ButtonSet
+  {sendButton :: Button
+  ,planButton :: Button
+  ,resignButton :: Button
+  ,upButton :: Button
+  ,leftButton :: Button
+  ,currentButton :: Button
+  ,rightButton :: Button
+  ,downButton :: Button
+  ,deleteNodeButton :: Button
+  ,deleteAllButton :: Button
+  }
+
 data Env = Env {icons :: Array (Colour, Int) Surface
                ,moveLabel :: Label
-               ,sendButton :: Button
-               ,planButton :: Button
                ,topClock :: Label
                ,bottomClock :: Label
                ,setupGrid :: Grid
@@ -915,13 +962,9 @@ data Env = Env {icons :: Array (Colour, Int) Surface
                ,rightPressAH :: AddHandler Square
                ,releaseAH :: AddHandler Square
                ,motionAH :: AddHandler Square
-               ,sendAH :: AddHandler ()
                ,flipAH :: AddHandler ()
-               ,planAH :: AddHandler ()
                ,tickAH :: AddHandler ()
                ,setupIconAH :: [AddHandler ()]
-               ,resignAH :: AddHandler ()
-               ,resignButton :: Button
                ,killGameRef :: IORef (IO ())
                ,treeCanvas :: DrawingArea
                ,setDrawBoard :: (DrawingArea -> Render ()) -> IO ()
@@ -947,25 +990,25 @@ data Env = Env {icons :: Array (Colour, Int) Surface
                ,usernameEntry, passwordEntry :: Entry
                ,goldSideButton, mySideButton :: RadioButton
                ,settingsDialog :: Dialog
-               ,upButton :: Button
-               ,leftButton :: Button
-               ,currentButton :: Button
-               ,rightButton :: Button
-               ,downButton :: Button
-               ,deleteNodeButton :: Button
-               ,deleteAllButton :: Button
-               ,upAH :: AddHandler ()
+               ,treePressAH :: AddHandler (Double, Double)
+               ,treeScrolledWindow :: ScrolledWindow
+               ,getBlindMode :: IO (Bool, Bool)
+               ,actionColumn :: TreeViewColumn
+               ,accelColumn :: TreeViewColumn
+               ,keyTreeView :: TreeView
+               ,sendAH :: AddHandler ()
+               ,resignAH :: AddHandler ()
+               ,planAH :: AddHandler ()
+               ,clearArrowsAH :: AddHandler ()
                ,leftAH :: AddHandler ()
-               ,currentAH :: AddHandler ()
                ,rightAH :: AddHandler ()
+               ,upAH :: AddHandler ()
                ,downAH :: AddHandler ()
+               ,currentAH :: AddHandler ()
                ,deleteNodeAH :: AddHandler ()
                ,deleteLineAH :: AddHandler ()
                ,deleteAllAH :: AddHandler ()
-               ,treePressAH :: AddHandler (Double, Double)
-               ,treeScrolledWindow :: ScrolledWindow
-               ,clearArrowsAH :: AddHandler ()
-               ,getBlindMode :: IO (Bool, Bool)
+               ,buttonSet :: ButtonSet
                }
 
 globalEnv :: IORef Env
@@ -1149,11 +1192,7 @@ gameNetwork (params :: GameParams)
       eMove = f <$> (position <$> gameState) <@> eMoveTime
         where f pos (m,x) = either error (\p -> GameTreeNode m p (Just x) Nothing) (playGenMove pos m)
 
---  reactimate $ print <$> eUpdate
---  reactimate $ print <$> eMoveTime
---  reactimate $ print . moveTime <$> eMove
-  
-  ePlanMove <- buttonAction (get planButton) ePlan (fmap ((\(m,p) -> GameTreeNode m p Nothing Nothing))
+  ePlanMove <- buttonAction (get (planButton . buttonSet)) ePlan (fmap ((\(m,p) -> GameTreeNode m p Nothing Nothing))
                                                      . snd <$> nextMove)
   bTree <- treeNetwork initialTree initialGamePos eMove ePlanMove visible
 
@@ -1163,7 +1202,7 @@ gameNetwork (params :: GameParams)
           f gs _ | not (started gs) = Just Nothing
                  | otherwise = Nothing
   
-  eStartSend <- buttonAction (get sendButton) eSend bStartSend
+  eStartSend <- buttonAction (get (sendButton . buttonSet)) eSend bStartSend
   startStatus <- send $ if isUser params ! Gold then RequestStart <$ whenE (not . started <$> gameState) eStartSend
                                                 else never
   sendStatus <- send $ RequestMove <$> filterJust eStartSend
@@ -1242,9 +1281,9 @@ gameNetwork (params :: GameParams)
       f _ _ True = "Sending"
       f False _ _ = "Start"
       f _ _ _ = "Send"
-    in onChanges $ buttonSetLabel (get sendButton) <$> (f <$> (started <$> gameState) <*> startStatus <*> sendStatus)
+    in onChanges $ buttonSetLabel (get (sendButton . buttonSet)) <$> (f <$> (started <$> gameState) <*> startStatus <*> sendStatus)
 
-  onChanges $ buttonSetLabel (get resignButton) . (\b -> if b then "Resigning" else "Resign") <$> resignStatus
+  onChanges $ buttonSetLabel (get (resignButton . buttonSet)) . (\b -> if b then "Resigning" else "Resign") <$> resignStatus
 
   let setupLabelsB = (\(ShadowBoard _ remaining _) -> map show $ elems remaining) <$> shadowBoard
   onChanges $ zipWithM_ labelSetText (reverse (get setupLabels)) <$> setupLabelsB
@@ -1391,9 +1430,6 @@ toServer (gsurl, sid) auth requestChan responseChan = forever $ try f >>= \case
 
 getUpdates :: [(String, String)] -> Bool -> TChan Update -> IO Bool
 getUpdates response started updateChan = do
---  forM response $ uncurry (printf "%s: %s\n")
---  putStrLn $ replicate 64 '-'
-
   let send = atomically . writeTChan updateChan
   
   let start = not started && isJust (lookup "starttime" response)
@@ -1965,93 +2001,141 @@ initialStuff = do
 
 ----------------------------------------------------------------
 
-settingsButtonCallback :: IO ()
-settingsButtonCallback = do
+settingsButtonCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
+settingsButtonCallback ls = do
   entrySetText (get usernameEntry) =<< fromMaybe "" <$> getSetting username
   entrySetText (get passwordEntry) =<< fromMaybe "" <$> getSetting password
   v <- getSetting viewMySide
   toggleButtonSetActive (if v then get mySideButton else get goldSideButton) True
-  widgetShow (get settingsDialog)
 
-settingsSetCallback :: IO ()
-settingsSetCallback = do
+    -- use of dialogRun to prevent the dialog from being destroyed on deleteEvent
+  dialogRun (get settingsDialog) >>= \_ -> settingsSetCallback ls
+
+initKeyList :: IO (ListStore (String, ([Modifier], KeyVal)))
+initKeyList = do
+  ls <- listStoreNew =<< mapM (\(setting, desc, _) -> (desc,) <$> getSetting setting) keyBindings
+  treeViewSetModel (get keyTreeView) ls
+
+  crt <- cellRendererTextNew
+  cellLayoutPackStart (get actionColumn) crt False
+  cellLayoutSetAttributes (get actionColumn) crt ls $ \(a,_) -> [cellText := a]
+
+  cra <- cellRendererAccelNew
+  Gtk.set cra [cellRendererAccelAccelMode := CellRendererAccelModeOther]
+
+  cellLayoutPackStart (get accelColumn) cra False
+  cellLayoutSetAttributes (get accelColumn) cra ls $ \(_,(m,k)) -> [cellRendererAccelAccelKey := fromIntegral k
+                                                                   ,cellRendererAccelAccelMods := m
+                                                                   ]
+
+  get keyTreeView `on` keyPressEvent $ do
+    k <- eventKeyVal
+    m <- eventModifier
+    liftIO $ do
+      treeViewGetSelection (get keyTreeView) >>= treeSelectionGetSelected >>= \case
+        Nothing -> return ()
+        Just iter -> do
+          (a,b) <- listStoreGetValue ls (listStoreIterToIndex iter)
+          listStoreSetValue ls (listStoreIterToIndex iter) (a, (m,k))
+    return True
+
+  return ls
+
+settingsSetCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
+settingsSetCallback ls = do
   u <- getSetting username
   p <- getSetting password
   u' <- entryGetText (get usernameEntry)
   p' <- entryGetText (get passwordEntry)
   when ((u, p) /= (Just u', Just p')) $ setUsernameAndPassword u' p'
+  
   v <- fromMaybe False . fmap fst . find snd . zip [True, False] <$> mapM toggleButtonGetActive [get mySideButton, get goldSideButton]
   atomically $ modifyTVar (get conf) $ \c -> Settings.setSetting c viewMySide v
+
+  l <- listStoreToList ls
+  atomically $ modifyTVar (get conf) $ \c -> foldl' (\c' ((s,_,_),(_,mk)) -> Settings.setSetting c' s mk)
+                                                    c
+                                                    $ zip keyBindings l
+  
   saveSettings
   widgetHide (get settingsDialog)
 
 ----------------------------------------------------------------
 
+#ifdef LOCAL
+dataFileName = return
+#else
+dataFileName = getDataFileName
+#endif
+
 main = do
   initGUI
 
   icons <- fmap (listArray ((Gold, 0), (Silver, length pieceInfo - 1)))
-                $ mapM ((>>= imageSurfaceCreateFromPNG) . getDataFileName . ("images/" ++))
-                       $ ["GoldRabbit.png"
-                         ,"GoldCat.png"
-                         ,"GoldDog.png"
-                         ,"GoldHorse.png"
-                         ,"GoldCamel.png"
-                         ,"GoldElephant.png"
-                         ,"SilverRabbit.png"
-                         ,"SilverCat.png"
-                         ,"SilverDog.png"
-                         ,"SilverHorse.png"
-                         ,"SilverCamel.png"
-                         ,"SilverElephant.png"
-                         ]
+                $ mapM ((>>= imageSurfaceCreateFromPNG) . dataFileName . ("images/" ++))
+                       ["GoldRabbit.png"
+                       ,"GoldCat.png"
+                       ,"GoldDog.png"
+                       ,"GoldHorse.png"
+                       ,"GoldCamel.png"
+                       ,"GoldElephant.png"
+                       ,"SilverRabbit.png"
+                       ,"SilverCat.png"
+                       ,"SilverDog.png"
+                       ,"SilverHorse.png"
+                       ,"SilverCamel.png"
+                       ,"SilverElephant.png"
+                       ]
 
   builder <- builderNew
-  builderAddFromFile builder =<< getDataFileName "client.glade"
+  builderAddFromFile builder =<< dataFileName "client.glade"
 
-  window <- builderGetObject builder castToWindow "window"{-# LINE 2012 "Main.vhs" #-}
-  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 2013 "Main.vhs" #-}
-  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 2013 "Main.vhs" #-}
-  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 2013 "Main.vhs" #-}
-  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 2014 "Main.vhs" #-}
-  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 2014 "Main.vhs" #-}
-  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 2014 "Main.vhs" #-}
-  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 2015 "Main.vhs" #-}
-  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 2015 "Main.vhs" #-}
-  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 2015 "Main.vhs" #-}
-  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 2015 "Main.vhs" #-}
-  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 2015 "Main.vhs" #-}
-  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 2015 "Main.vhs" #-}
-  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 2016 "Main.vhs" #-}
-  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 2016 "Main.vhs" #-}
-  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 2016 "Main.vhs" #-}
-  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 2016 "Main.vhs" #-}
-  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 2016 "Main.vhs" #-}
-  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 2017 "Main.vhs" #-}
-  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 2017 "Main.vhs" #-}
-  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 2018 "Main.vhs" #-}
-  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 2018 "Main.vhs" #-}
-  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 2018 "Main.vhs" #-}
-  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 2018 "Main.vhs" #-}
-  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 2018 "Main.vhs" #-}
-  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 2018 "Main.vhs" #-}
-  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 2019 "Main.vhs" #-}
-  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 2020 "Main.vhs" #-}
-  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 2021 "Main.vhs" #-}
-  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 2022 "Main.vhs" #-}
-  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 2022 "Main.vhs" #-}
-  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 2023 "Main.vhs" #-}
-  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 2023 "Main.vhs" #-}
-  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 2024 "Main.vhs" #-}
-  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 2024 "Main.vhs" #-}
-  upButton <- builderGetObject builder castToButton "up-button"{-# LINE 2025 "Main.vhs" #-}
-  leftButton <- builderGetObject builder castToButton "left-button"{-# LINE 2025 "Main.vhs" #-}
-  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 2025 "Main.vhs" #-}
-  rightButton <- builderGetObject builder castToButton "right-button"{-# LINE 2025 "Main.vhs" #-}
-  downButton <- builderGetObject builder castToButton "down-button"{-# LINE 2025 "Main.vhs" #-}
-  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 2025 "Main.vhs" #-}
-  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 2025 "Main.vhs" #-}
-  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 2026 "Main.vhs" #-}
+  window <- builderGetObject builder castToWindow "window"{-# LINE 2093 "Main.vhs" #-}
+  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 2094 "Main.vhs" #-}
+  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 2094 "Main.vhs" #-}
+  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 2094 "Main.vhs" #-}
+  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 2095 "Main.vhs" #-}
+  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 2095 "Main.vhs" #-}
+  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 2095 "Main.vhs" #-}
+  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 2096 "Main.vhs" #-}
+  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 2096 "Main.vhs" #-}
+  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 2096 "Main.vhs" #-}
+  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 2096 "Main.vhs" #-}
+  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 2096 "Main.vhs" #-}
+  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 2096 "Main.vhs" #-}
+  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 2097 "Main.vhs" #-}
+  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 2097 "Main.vhs" #-}
+  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 2097 "Main.vhs" #-}
+  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 2097 "Main.vhs" #-}
+  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 2097 "Main.vhs" #-}
+  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 2098 "Main.vhs" #-}
+  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 2098 "Main.vhs" #-}
+  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 2099 "Main.vhs" #-}
+  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 2099 "Main.vhs" #-}
+  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 2099 "Main.vhs" #-}
+  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 2099 "Main.vhs" #-}
+  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 2099 "Main.vhs" #-}
+  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 2099 "Main.vhs" #-}
+  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 2100 "Main.vhs" #-}
+  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 2101 "Main.vhs" #-}
+  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 2102 "Main.vhs" #-}
+  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 2103 "Main.vhs" #-}
+  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 2103 "Main.vhs" #-}
+  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 2104 "Main.vhs" #-}
+  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 2104 "Main.vhs" #-}
+  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 2105 "Main.vhs" #-}
+  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 2105 "Main.vhs" #-}
+  upButton <- builderGetObject builder castToButton "up-button"{-# LINE 2106 "Main.vhs" #-}
+  leftButton <- builderGetObject builder castToButton "left-button"{-# LINE 2106 "Main.vhs" #-}
+  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 2106 "Main.vhs" #-}
+  rightButton <- builderGetObject builder castToButton "right-button"{-# LINE 2106 "Main.vhs" #-}
+  downButton <- builderGetObject builder castToButton "down-button"{-# LINE 2106 "Main.vhs" #-}
+  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 2106 "Main.vhs" #-}
+  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 2106 "Main.vhs" #-}
+  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 2107 "Main.vhs" #-}
+  actionColumn <- builderGetObject builder castToTreeViewColumn "action-column"{-# LINE 2108 "Main.vhs" #-}
+  accelColumn <- builderGetObject builder castToTreeViewColumn "accel-column"{-# LINE 2108 "Main.vhs" #-}
+  keyTreeView <- builderGetObject builder castToTreeView "key-tree-view"{-# LINE 2109 "Main.vhs" #-}
 
   setupIcons <- replicateM (length pieceInfo) drawingAreaNew
   setupLabels <- replicateM (length pieceInfo) $ labelNew (Nothing :: Maybe String)
@@ -2082,39 +2166,6 @@ main = do
   widgetAddEvents boardCanvas [ButtonPressMask, ButtonReleaseMask, Button1MotionMask]
   widgetAddEvents window [KeyPressMask]
   widgetAddEvents treeCanvas [ButtonPressMask]
-
-  (deleteLineAH, deleteLineFire) <- newAddHandler
-  (clearArrowsAH, clearArrowsFire) <- newAddHandler
-
-  let buttonMap = map (first ([],))
-                      [("r", resignButton)
-                      ,("s", sendButton)
-                      ,("space", planButton)
-                      ,("Up", upButton)
-                      ,("Left", leftButton)
-                      ,("c", currentButton)
-                      ,("Right", rightButton)
-                      ,("Down", downButton)
-                      ,("BackSpace", deleteNodeButton)
-                      ]
-                  ++ [(([Gtk.Control, Gtk.Shift], "BackSpace"), deleteAllButton)]
-  ([resignAH, sendAH, planAH, upAH, leftAH, currentAH, rightAH, downAH, deleteNodeAH, deleteAllAH],
-         buttonKeyMap) <- fmap unzip $ forM buttonMap $ \(mk, b) -> do
-    (ah, fire) <- newAddHandler
-    b `on` buttonActivated $ fire ()
-    return (ah, (mk, fire ()))
-
-  let keyMap :: [(([Modifier], String), IO ())]
-      keyMap = buttonKeyMap
-               ++ map (first ([],)) [("Escape", clearArrowsFire ())]
-               ++ [(([Gtk.Control], "BackSpace"), deleteLineFire ())]
-
-  window `on` keyPressEvent $ do
-    k <- eventKeyName
-    m <- eventModifier
-    case find (\((m', s), _) -> k == fromString s && elem m (permutations m')) keyMap of
-      Just (_, action) -> do {liftIO action; return True}
-      Nothing -> return False
 
   let layoutHack = True
 
@@ -2239,8 +2290,6 @@ main = do
   playBotItem `on` menuItemActivated $ playBotCallback
 
   widgetGrabDefault =<< dialogAddButton settingsDialog "OK" ResponseOk
-  settingsItem `on` menuItemActivated $ settingsButtonCallback
-  settingsDialog `on` response $ \_ -> settingsSetCallback
 
 ----------------------------------------------------------------
 
@@ -2259,9 +2308,17 @@ main = do
     Right (c, _) -> atomically $ writeTVar conf c
     Left (_ :: IOException) -> return ()
 
+  let buttonSet = ButtonSet{..}
+  [sendAH, resignAH, planAH, clearArrowsAH, leftAH, rightAH, upAH, downAH, currentAH, deleteNodeAH, deleteLineAH, deleteAllAH]
+    <- initKeyActions window buttonSet
+
   writeIORef globalEnv Env{..}
 
 ----------------------------------------------------------------
+
+  do
+    ls <- initKeyList
+    settingsItem `on` menuItemActivated $ settingsButtonCallback ls
 
   -- this is on realize so that the prompt-username window is centred over the main window
   window `on` realize $ initialStuff
