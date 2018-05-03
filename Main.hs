@@ -55,6 +55,7 @@ import Match
 import qualified Protocol
 import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSeat, sit)
 import Base
+import GameTree
 
 #ifndef LOCAL
 import Paths_nosteps
@@ -68,13 +69,11 @@ import Paths_nosteps
     Other notations
     Copy notation
     Move annotations
-    Don't bin arrows on changeView
     Board orientation cue
     Clocks for finished games
     Double-headed arrows
     Premoves
     Chat
-    Option to remove plans when sending
 -}
 
 {-
@@ -87,10 +86,10 @@ TODO:
   make move illegal but still draw it when arrowset modified
   logging
   harlog the shown position (after current move)
-  next, prev variation key
   grabbing arrows from empty squares doesn't work for inferred arrows
-  don't remove arrows when move added
   kill threads on game end
+  move recalculated when tree changes, unnecessarily
+  key selector: exclude modifiers
 
   change error calls to something else
 -}
@@ -144,18 +143,20 @@ password :: Settings.Setting (Maybe String)
 password = Settings.Setting "password" Nothing
 
 viewMySide = Settings.Setting "view-my-side" False
+enablePlans = Settings.Setting "enable-plans" True
+killPlans = Settings.Setting "kill-plans" True
 
 settingsPlace = Settings.AutoFromAppName "nosteps"
 
-setUsernameAndPassword :: String -> String -> IO ()
-setUsernameAndPassword u p = do
-  atomically $ do
-    modifyTVar (get conf) $ \c -> Settings.setSetting (Settings.setSetting c username (Just u)) password (Just p)
-    writeTVar (get gameroomRef) Nothing   -- bad: should logout
-  getBotLadder
-
 saveSettings :: IO ()
 saveSettings = readTVarIO (get conf) >>= Settings.saveSettings Settings.emptyDefaultConfig settingsPlace
+
+setUsernameAndPassword :: String -> String -> IO ()
+setUsernameAndPassword u p = do
+  c <- readTVarIO (get conf)
+  get setConf $ Settings.setSetting (Settings.setSetting c username (Just u)) password (Just p)
+  atomically $ writeTVar (get gameroomRef) Nothing   -- bad: should logout
+  getBotLadder
 
 keyBindings :: [(Settings.Setting ([Modifier], KeyVal), String, Maybe (ButtonSet -> Button))]
 keyBindings = map (\(a,b,c,d,e) -> (Settings.Setting a (b, keyFromName (fromString c)), d, e))
@@ -163,14 +164,17 @@ keyBindings = map (\(a,b,c,d,e) -> (Settings.Setting a (b, keyFromName (fromStri
                   ,("resign-key", [], "r", "Resign", Just resignButton)
                   ,("plan-key", [], "space", "Enter plan move", Just planButton)
                   ,("clear-key", [], "Escape", "Clear arrows", Nothing)
-                  ,("left-key", [], "Left", "Previous move", Just leftButton)
-                  ,("right-key", [], "Right", "Next move", Just rightButton)
-                  ,("up-key", [], "Up", "Go to game start", Just upButton)
-                  ,("down-key", [], "Down", "Go to game end", Just downButton)
-                  ,("current-key", [], "c", "Go to current position", Just currentButton)
+                  ,("prev-key", [], "Up", "Previous move", Just prevButton)
+                  ,("next-key", [], "Down", "Next move", Just nextButton)
+                  ,("start-key", [Gtk.Control], "Up", "Go to game start", Just startButton)
+                  ,("end-key", [Gtk.Control], "Down", "Go to game end", Just endButton)
+                  ,("current-key", [], "c", "Go to current game position", Just currentButton)
+                  ,("prev-branch-key", [], "Left", "Previous variation", Nothing)
+                  ,("next-branch-key", [], "Right", "Next variation", Nothing)
                   ,("delete-node-key", [], "BackSpace", "Remove plan move", Just deleteNodeButton)
                   ,("delete-line-key", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", Nothing)
                   ,("delete-all-key", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", Just deleteAllButton)
+                  ,("delete-from-here-key", [], "Delete", "Remove plans starting at current position", Nothing)
                   ]
 
 deriving instance Read Modifier
@@ -261,6 +265,9 @@ fullShadow :: ShadowBoard -> Bool
 fullShadow (ShadowBoard _ remaining _) = case filter (/= 0) (elems remaining) of
   _:_:_ -> False
   _ -> True
+
+emptyShadow :: ShadowBoard -> Bool
+emptyShadow (ShadowBoard b _ _) = b == emptyBoard
 
 ----------------------------------------------------------------
 
@@ -491,7 +498,6 @@ drawCaptures board visible icons canvas = do
     when (visible ! c) $ zipWithM_ (\p i -> withTransform (i * (z-overlap)) y z $ drawPiece (icons ! p) 1)
                                    (captures c) [0..]
 
-
 ----------------------------------------------------------------
 
 -- checkButtonBehavior :: CheckButton -> MomentIO (Behavior Bool)
@@ -675,10 +681,10 @@ placeTree forest currentPos = f [([], forest)] 0 (Map.empty, 0)
         gap = if nGaps == 0 then 0 else width / nGaps
 
 drawTree :: GameTree a -> Map Int [([Int], Double)] -> Render ()
-drawTree GameTree{tree = forest, currentPos, pathPos, viewPos} offsets = do
+drawTree gt offsets = do
     setColour []
     drawNode treeMargin treeMargin []
-    f forest []
+    f (tree gt) []
   where
     f :: Forest a -> [Int] -> Render ()
     f forest ix = zipWithM_ g forest [0..]
@@ -697,17 +703,17 @@ drawTree GameTree{tree = forest, currentPos, pathPos, viewPos} offsets = do
     drawNode x y ix = do
       arc x y treeRadius 0 (2 * pi)
       fill
-      when (ix == viewPos) $ do
+      when (ix == viewPos gt) $ do
         arc x y (treeRadius * 1.8) 0 (2 * pi)
         stroke
-    setColour ix | ix == currentPos = let (r,g,b) = currentColour in setSourceRGBA r g b alpha
-                 | ix == viewPos = let (r,g,b) = viewColour in setSourceRGBA r g b alpha
-                 | isPrefixOf ix currentPos = setSourceRGBA 0 0 0 alpha
+    setColour ix | ix == currentPos gt = let (r,g,b) = currentColour in setSourceRGBA r g b alpha
+                 | ix == viewPos gt = let (r,g,b) = viewColour in setSourceRGBA r g b alpha
+                 | isPrefixOf ix (currentPos gt) = setSourceRGBA 0 0 0 alpha
                  | otherwise = setSourceRGBA 0 0 0.5 alpha
-      where alpha = if isPrefixOf ix pathPos then 1 else 0.5
+      where alpha = if isPrefixOf ix (pathEnd gt) then 1 else 0.5
 
 drawMoves :: GameTree GameTreeNode -> Double -> Array Colour Bool -> DrawingArea -> Render ()
-drawMoves GameTree{tree, currentPos, pathPos, viewPos} treeWidth visible canvas = do
+drawMoves gt treeWidth visible canvas = do
   w <- liftIO $ fromIntegral <$> widgetGetAllocatedWidth canvas
   setFontSize (treeYGap * 0.75)
   let
@@ -716,11 +722,11 @@ drawMoves GameTree{tree, currentPos, pathPos, viewPos} treeWidth visible canvas 
     yText n = y n + treeYGap * 0.85
     f ix n = (background, s1, s2)
       where
-        (Just GameTreeNode{..}, _) = deref tree ix
+        Just GameTreeNode{..} = derefNode (tree gt) ix
         c | even n = Silver
           | otherwise = Gold
-        (r,g,b) | ix == viewPos = viewColour
-                | ix == currentPos = currentColour
+        (r,g,b) | ix == viewPos gt = viewColour
+                | ix == currentPos gt = currentColour
                 | c == Silver = (0.6, 0.6, 0.8)   -- Silver
                 | otherwise = (0.9, 0.7, 0)  -- Gold
         s1 = maybe "" showTreeDuration moveTime
@@ -731,7 +737,7 @@ drawMoves GameTree{tree, currentPos, pathPos, viewPos} treeWidth visible canvas 
           setSourceRGB r g b
           rectangle x (y n) (w - x) treeYGap
           fill
-    (bgs, s1s, s2s) = unzip3 $ zipWith f (tail (inits pathPos)) [1..]
+    (bgs, s1s, s2s) = unzip3 $ zipWith f (tail (inits (pathEnd gt))) [1..]
   sequence_ bgs
   setSourceRGB 0 0 0
   xs <- forM (zip s1s [1..]) $ \(s, n) -> do
@@ -743,96 +749,8 @@ drawMoves GameTree{tree, currentPos, pathPos, viewPos} treeWidth visible canvas 
     moveTo x' (yText n)
     showText s
 
-deref :: Forest a -> [Int] -> (Maybe a, Forest a)
-deref f [] = (Nothing, f)
-deref f [n] = case f !! n of Node x f' -> (Just x, f')
-deref f (n:ns) = deref (subForest (f !! n)) ns
-
-deref' :: Forest a -> [Int] -> Forest a
-deref' f ix = snd $ deref f ix
-
-leftDepth :: Forest a -> Int
-leftDepth [] = 0
-leftDepth (Node _ f : _) = 1 + leftDepth f
-
-treeDepth :: Forest a -> Int
-treeDepth [] = 0
-treeDepth l = 1 + maximum (map (treeDepth . subForest) l)
-
-pathFrom :: [Int] -> Forest a -> [Int] -> [Int]
-pathFrom here tree current = pos ++ replicate (leftDepth (deref' tree pos)) 0
-  where pos = if isPrefixOf here current then current else here
-
-modifyAt :: Forest a -> [Int] -> (Forest a -> Forest a) -> Forest a
-modifyAt forest [] f = f forest
-modifyAt forest (n:ns) f = take n forest ++ Node x (modifyAt forest' ns f) : drop (n+1) forest
-  where Node x forest' = forest !! n
-
-deleteNode :: [Int] -> Forest a -> [Int] -> (Forest a, [Int])
-deleteNode [] f currentPos = (f, currentPos)
-deleteNode [n] f [] = (take n f ++ drop (n+1) f, [])
-deleteNode [n] f (m:ms) | n == m = (f, m:ms)
-                        | otherwise = (take n f ++ drop (n+1) f, (if m<n then m else m-1) : ms)
-deleteNode (n:ns) f (m:ms)
-  | n == m = let Node x f' = f !! n in case deleteNode ns f' ms of
-    (f'', pos') -> (take n f ++ Node x f'' : drop (n+1) f, m : pos')
-deleteNode (n:ns) f currentPos = let Node x f' = f !! n in case deleteNode ns f' [] of
-  (f'', pos') -> (take n f ++ Node x f'' : drop (n+1) f, currentPos)
-
-data GameTree a = GameTree
-  {tree :: Forest a
-  ,currentPos :: [Int]
-  ,pathPos :: [Int]
-  ,viewPos :: [Int]
-  }
-
-select :: [Int] -> GameTree a -> GameTree a
-select pos GameTree{tree, currentPos, pathPos, viewPos}
-  = GameTree{tree, currentPos
-            ,pathPos = if isPrefixOf pos pathPos
-                         then pathPos
-                         else pathFrom pos tree currentPos
-            ,viewPos = pos
-            }
-
-deleteViewNode :: GameTree a -> GameTree a
-deleteViewNode gt@GameTree{currentPos, viewPos} | null viewPos || isPrefixOf viewPos currentPos = gt
-deleteViewNode GameTree{tree, currentPos, pathPos, viewPos} = case deleteNode viewPos tree currentPos of
-  (tree', currentPos') -> GameTree{tree = tree'
-                                  ,currentPos = currentPos'
-                                  ,pathPos = pathFrom (init viewPos) tree' currentPos'
-                                  ,viewPos = init viewPos
-                                  }
-
-deleteLine :: GameTree a -> GameTree a
-deleteLine gt@GameTree{tree, currentPos, viewPos} = case reverse (inits viewPos) of
-  ix:_ | isPrefixOf ix currentPos -> gt
-  ix:ixs -> let removePos = last $ ix : takeWhile (\ix' -> not (isPrefixOf ix' currentPos) && 1 == length (deref' tree ix')) ixs in
-    case deleteNode removePos tree currentPos of
-      (tree', currentPos') -> GameTree{tree = tree'
-                                      ,currentPos = currentPos'
-                                      ,pathPos = pathFrom (init removePos) tree' currentPos'
-                                      ,viewPos = init removePos
-                                      }
-
-deleteAll :: GameTree a -> GameTree a
-deleteAll GameTree{tree, currentPos, viewPos} = GameTree{tree = f tree currentPos
-                                                        ,currentPos = map (const 0) currentPos
-                                                        ,pathPos = map (const 0) currentPos
-                                                        ,viewPos = replicate (g viewPos currentPos) 0
-                                                        }
-  where
-    f [] _ = []
-    f _ [] = []
-    f ts (n:ns) = case ts !! n of Node x ts' -> [Node x (f ts' ns)]
-    g (x:xs) (y:ys) | x == y = 1 + g xs ys
-    g _ _ = 0
-
--- deleteFromHere :: GameTree -> GameTree
--- deleteFromHere GameTree{tree, currentPos, pathPos, viewPos} = 
-
 mouseNode :: [Int] -> Map Int [([Int], Double)] -> Double -> (Double, Double) -> Maybe [Int]
-mouseNode pathPos offsets width (x,y)
+mouseNode pathEnd offsets width (x,y)
   | x <= width + treeMargin = do
       l <- Map.lookup (round level) offsets
       let (ix, dist) = minimumBy (compare `Function.on` snd)
@@ -843,76 +761,62 @@ mouseNode pathPos offsets width (x,y)
         then Just ix
         else Nothing
   | otherwise = let n = ceiling level in
-                 if n >= 1 && n <= length pathPos
-                   then Just (take n pathPos) else Nothing
+                 if n >= 1 && n <= length pathEnd
+                   then Just (take n pathEnd) else Nothing
   where
     level = (y - treeMargin) / treeYGap
-
-treePlan :: Eq a => a -> GameTree a -> GameTree a
-treePlan x gt@GameTree{tree, currentPos, viewPos, pathPos} = case find (\(Node x' _, _) -> x == x') (zip (deref' tree viewPos) [0..]) of
-  Just (_, n) -> gt{viewPos = viewPos ++ [n]
-                   ,pathPos = if isPrefixOf (viewPos ++ [n]) pathPos then pathPos else pathFrom (viewPos ++ [n]) tree currentPos
-                   }
-  Nothing -> gt{tree = modifyAt tree viewPos (++ [Node x []])
-               ,pathPos = viewPos ++ [length (deref' tree viewPos)]
-               ,viewPos = viewPos ++ [length (deref' tree viewPos)]
-               }
-
-treeSend :: Eq a => a -> GameTree a -> GameTree a
-treeSend x GameTree{tree, currentPos, pathPos, viewPos}
-      = GameTree{tree = tree'
-                ,currentPos = currentPos'
-                ,viewPos = viewPos'
-                ,pathPos = pathFrom (if isPrefixOf viewPos' pathPos then pathPos else viewPos')
-                                    tree' currentPos'
-                }
-  where
-          -- if move is already in tree, replace in order to get new move time
-    (nodes, bs) = unzip $ map (\(Node x' f) -> if x == x' then (Node x f, True) else (Node x' f, False))
-                              $ deref' tree currentPos
-    (tree', currentPos') = case find fst (zip bs [0..]) of
-      Just (_, n) -> (modifyAt tree currentPos (const nodes), currentPos ++ [n])
-      Nothing -> (modifyAt tree currentPos (++ [Node x []]), currentPos ++ [length (deref' tree currentPos)])
-    viewPos' = if currentPos == viewPos then currentPos' else viewPos
 
 treeNetwork :: Forest GameTreeNode
             -> [Int]
             -> Event GameTreeNode
             -> Event GameTreeNode
             -> Behavior (Array Colour Bool)
-            -> MomentIO (Behavior (GameTree GameTreeNode))
-treeNetwork initialTree initialGamePos eSend ePlan visible = mdo
-  eUp <- fromAddHandler (get upAH)
-  eLeft <- fromAddHandler (get leftAH)
+            -> Behavior Bool
+            -> Behavior Bool
+            -> MomentIO (Behavior (GameTree GameTreeNode), Event ())
+treeNetwork initialTree initialGamePos eMove ePlan visible killPlans haveInput = mdo
+  eStart <- fromAddHandler (get startAH)
+  ePrevNode <- fromAddHandler (get prevAH)
   eCurrent <- fromAddHandler (get currentAH)
-  eRight <- fromAddHandler (get rightAH)
-  eDown <- fromAddHandler (get downAH)
+  eNextNode <- fromAddHandler (get nextAH)
+  eEnd <- fromAddHandler (get endAH)
+  ePrevBranch <- fromAddHandler (get prevBranchAH)
+  eNextBranch <- fromAddHandler (get nextBranchAH)
   eDeleteNode <- fromAddHandler (get deleteNodeAH)
   eDeleteLine <- fromAddHandler (get deleteLineAH)
-  eClear <- fromAddHandler (get deleteAllAH)
+  eDeleteAll <- fromAddHandler (get deleteAllAH)
+  eDeleteFromHere <- fromAddHandler (get deleteFromHereAH)
   eMouse <- fromAddHandler (get treePressAH)
-  bTree <- accumB (GameTree{tree = initialTree
-                           ,currentPos = initialGamePos
-                           ,pathPos = pathFrom [] initialTree initialGamePos
-                           ,viewPos = take 2 initialGamePos
-                           })
-             $ unions [(\gt@GameTree{viewPos} -> select (if null viewPos then [] else init viewPos) gt) <$ eLeft
-                      ,(\gt@GameTree{pathPos, viewPos} -> select (take (length viewPos + 1) pathPos) gt) <$ eRight
-                      ,(\gt@GameTree{viewPos} -> select (if length viewPos <= 2 then [] else take 2 viewPos) gt) <$ eUp
-                      ,(\gt@GameTree{pathPos} -> select pathPos gt) <$ eDown
-                      ,(\gt@GameTree{currentPos} -> select currentPos gt) <$ eCurrent
+
+  let eTreeMove = treeMove <$> killPlans <*> haveInput <*> bTree <@> eMove
+  
+  bTree <- accumB (mkGameTree initialTree initialGamePos (take 2 initialGamePos))
+             $ unions [(\gt -> select (if null (viewPos gt) then [] else init (viewPos gt)) gt) <$ ePrevNode
+                      ,(\gt -> select (take (length (viewPos gt) + 1) (pathEnd gt)) gt) <$ eNextNode
+                      ,(\gt -> select (if length (viewPos gt) <= 2 then [] else take 2 (viewPos gt)) gt) <$ eStart
+                      ,(\gt -> select (pathEnd gt) gt) <$ eEnd
+                      ,(\gt -> select (currentPos gt) gt) <$ eCurrent
+                      ,prevBranch <$ ePrevBranch
+                      ,nextBranch <$ eNextBranch
                       ,select <$> eSelect
                       ,deleteViewNode <$ eDeleteNode
                       ,deleteLine <$ eDeleteLine
-                      ,deleteAll <$ eClear
-                      ,treeSend <$> eSend
+                      ,deleteAll <$ eDeleteAll
+                      ,deleteFromHere <$ eDeleteFromHere
+                      ,const . fst <$> eTreeMove
                       ,treePlan <$> ePlan
                       ]
   let
-    bPlaces = (\GameTree{tree, currentPos} -> placeTree tree currentPos) <$> bTree
+    eClear = foldr (unionWith const) never
+                   [eStart, eEnd, eCurrent, ePrevNode, eNextNode, ePrevBranch, eNextBranch, eDeleteNode, eDeleteLine
+                   ,void eSelect, void ePlan
+                   ,void $ filterE snd eTreeMove
+                   ,void $ whenE ((\gt -> not (viewPos gt `isPrefixOf` currentPos gt)) <$> bTree) eDeleteAll
+                   ]
+    bPlaces = (\gt -> placeTree (tree gt) (currentPos gt)) <$> bTree
     bOffsets = fst <$> bPlaces
     bWidth = snd <$> bPlaces
-    eSelect = filterJust (mouseNode <$> (pathPos <$> bTree) <*> bOffsets <*> bWidth <@> eMouse)
+    eSelect = filterJust (mouseNode <$> (pathEnd <$> bTree) <*> bOffsets <*> bWidth <@> eMouse)
       
   onChanges $ get setDrawTree <$> ((\t o w v canvas -> do {drawTree t o; drawMoves t w v canvas})
                                       <$> bTree <*> bOffsets <*> bWidth <*> visible)
@@ -926,7 +830,8 @@ treeNetwork initialTree initialGamePos eSend ePlan visible = mdo
       when (y < v + 2 * treeYGap) $ Gtk.set a [adjustmentValue := y - 2 * treeYGap]
       when (y > v + p - 2 * treeYGap) $ Gtk.set a [adjustmentValue := y - p + 2 * treeYGap]
     ) <$> bTree
-  return bTree
+
+  return (bTree, eClear)
   
 ----------------------------------------------------------------
 
@@ -938,16 +843,9 @@ onChanges b = mdo
 --onChanges = (>>= reactimate') . changes
 
 data ButtonSet = ButtonSet
-  {sendButton :: Button
-  ,planButton :: Button
-  ,resignButton :: Button
-  ,upButton :: Button
-  ,leftButton :: Button
-  ,currentButton :: Button
-  ,rightButton :: Button
-  ,downButton :: Button
-  ,deleteNodeButton :: Button
-  ,deleteAllButton :: Button
+  {sendButton, planButton, resignButton
+  ,startButton, prevButton, currentButton, nextButton, endButton
+  ,deleteNodeButton, deleteAllButton :: Button
   }
 
 data Env = Env {icons :: Array (Colour, Int) Surface
@@ -1000,15 +898,21 @@ data Env = Env {icons :: Array (Colour, Int) Surface
                ,resignAH :: AddHandler ()
                ,planAH :: AddHandler ()
                ,clearArrowsAH :: AddHandler ()
-               ,leftAH :: AddHandler ()
-               ,rightAH :: AddHandler ()
-               ,upAH :: AddHandler ()
-               ,downAH :: AddHandler ()
+               ,prevAH :: AddHandler ()
+               ,nextAH :: AddHandler ()
+               ,startAH :: AddHandler ()
+               ,endAH :: AddHandler ()
                ,currentAH :: AddHandler ()
                ,deleteNodeAH :: AddHandler ()
                ,deleteLineAH :: AddHandler ()
                ,deleteAllAH :: AddHandler ()
+               ,prevBranchAH :: AddHandler ()
+               ,nextBranchAH :: AddHandler ()
+               ,deleteFromHereAH :: AddHandler ()
                ,buttonSet :: ButtonSet
+               ,enablePlansButton, killPlansButton :: CheckButton
+               ,setConf :: Settings.Conf -> IO ()
+               ,confAH :: AddHandler Settings.Conf
                }
 
 globalEnv :: IORef Env
@@ -1034,6 +938,15 @@ gameroom = readTVarIO (get gameroomRef) >>= \case
     case (u, p) of
       (Just u'@(_:_), Just p'@(_:_)) -> Protocol.login u' p'
       _ -> error "Can't get gameroom"
+
+bConf :: MomentIO (Behavior Settings.Conf)
+bConf = do
+  c <- liftIO $ readTVarIO (get conf)
+  e <- fromAddHandler (get confAH)
+  stepper c e
+
+-- setConf :: Settings.Conf -> IO ()
+-- setConf c = join $ atomically $ get setConf' c
 
 ----------------------------------------------------------------
 
@@ -1091,6 +1004,8 @@ gameNetwork (params :: GameParams)
             (eUpdate :: Event Update)           --                        choosing how to handle legality checking
             (flipped :: Behavior Bool)
     = mdo
+  bConf' <- bConf
+  
   eLeft <- fromAddHandler (get leftPressAH)
   eRight <- fromAddHandler (get rightPressAH)
   eRelease <- fromAddHandler (get releaseAH)
@@ -1125,7 +1040,7 @@ gameNetwork (params :: GameParams)
   
   let squareMap = (\f -> if f then flipSquare else id) <$> flipped
       view :: Behavior (Maybe GameTreeNode)  -- Nothing for the root
-      view = (\GameTree{tree, viewPos} -> fst (deref tree viewPos)) <$> bTree
+      view = (\gt -> derefNode (tree gt) (viewPos gt)) <$> bTree
       setup = (< 2) . depth <$> view
       (eSetupToggle, eLeft') = RB.split $ (\b x -> if b then Left (fst x) else Right x)
                                                <$> setup <@> (first <$> squareMap <@> eLeft)
@@ -1165,10 +1080,10 @@ gameNetwork (params :: GameParams)
         where
           g _ _ _ True = Nothing
           g c tp n _ | not (isUser params ! c) = Nothing
-                     | currentPos tp == viewPos tp = n
-                     | currentPos tp `isPrefixOf` viewPos tp = move <$> (fst $ deref (tree tp)
-                                                                                     (take (length (currentPos tp) + 1) (viewPos tp)))
-                     | otherwise = Nothing
+                     | otherwise = case dropPrefix (currentPos tp) (viewPos tp) of
+                       Just [] -> n
+                       Just (x:_) -> move <$> derefNode (tree tp) (currentPos tp ++ [x])
+                       _ -> Nothing
   
       send :: Event Request -> MomentIO (Behavior Bool)
       send e = do
@@ -1192,9 +1107,19 @@ gameNetwork (params :: GameParams)
       eMove = f <$> (position <$> gameState) <@> eMoveTime
         where f pos (m,x) = either error (\p -> GameTreeNode m p (Just x) Nothing) (playGenMove pos m)
 
-  ePlanMove <- buttonAction (get (planButton . buttonSet)) ePlan (fmap ((\(m,p) -> GameTreeNode m p Nothing Nothing))
-                                                     . snd <$> nextMove)
-  bTree <- treeNetwork initialTree initialGamePos eMove ePlanMove visible
+  ePlanMove <- buttonAction (get (planButton . buttonSet))
+                            ePlan
+                            $ (\c x -> if Settings.getSetting' c enablePlans
+                                         then (\(m,p) -> GameTreeNode m p Nothing Nothing) <$> snd x
+                                         else Nothing) <$> bConf' <*> nextMove
+
+  (bTree, eChangeView) <- treeNetwork initialTree
+                                      initialGamePos
+                                      eMove
+                                      ePlanMove
+                                      visible
+                                      (flip Settings.getSetting' killPlans <$> bConf')
+                                      haveInput
 
   let bStartSend = f <$> gameState <*> sendMove
         where
@@ -1208,9 +1133,8 @@ gameNetwork (params :: GameParams)
   sendStatus <- send $ RequestMove <$> filterJust eStartSend
   resignStatus <- send $ filterJust $ fmap RequestResign defaultColour <$ eResign
 
-  -- this is wrong: change to currentPos should not kill arrows
-  eChangeView <- void <$> changes bTree
-  let eClear = unionWith const eChangeView eEscape
+    -- inclusion of eSend here is a hack so that viewPos moves when sending a move
+  let eClear = foldr (unionWith const) never [eChangeView, eEscape, eSend]
   
   (as, la) <- arrows visible (board <$> view) eArrowLeft (squareMap <@> eRelease) (squareMap <@> eMotion) eClear
 
@@ -1220,6 +1144,8 @@ gameNetwork (params :: GameParams)
                                               ,(\sq -> Map.mapWithKey (\trap x -> if trap == sq then not x else x))
                                                    <$> (squareMap <@> eRight)
                                               ]
+
+  let haveInput = (\as la lt s -> not (null as) || isJust la || or lt || not (emptyShadow s)) <$> as <*> la <*> liveTraps <*> shadowBoard
 
   ms <- moveSet (board <$> view) (toMove <$> view) as liveTraps eToggleCapture
 
@@ -1983,7 +1909,6 @@ promptUsername finalAction = do
     p <- entryGetText e2
     widgetDestroy d
     setUsernameAndPassword u p
-    saveSettings
     finalAction
 
   return ()
@@ -2001,12 +1926,37 @@ initialStuff = do
 
 ----------------------------------------------------------------
 
+settingAccessor :: (Show a, Read a)
+                => Settings.Setting a
+                -> IO a
+                -> (a -> IO ())
+                -> (IO (Settings.Conf -> Settings.Conf), Settings.Conf -> IO ())
+settingAccessor s getS setS = ((\x c -> Settings.setSetting c s x) <$> getS,
+                               \c -> setS (Settings.getSetting' c s)
+                              )
+
+widgetsToConf :: IO (Settings.Conf -> Settings.Conf)
+confToWidgets :: Settings.Conf -> IO ()
+(widgetsToConf, confToWidgets) = (foldr (liftA2 (.)) (return id) gets,
+                                  foldr (\x y c -> x c >> y c) (const (return ())) sets)
+  where
+    (gets, sets) = unzip [settingAccessor username (Just <$> entryGetText (get usernameEntry))
+                                                   (entrySetText (get usernameEntry) . fromMaybe "")
+                         ,settingAccessor password (Just <$> entryGetText (get passwordEntry))
+                                                   (entrySetText (get passwordEntry) . fromMaybe "")
+                         ,settingAccessor viewMySide (fromMaybe False . fmap fst . find snd . zip [True, False]
+                                                           <$> mapM toggleButtonGetActive [get mySideButton, get goldSideButton])
+                                                     (\v -> toggleButtonSetActive (if v then get mySideButton else get goldSideButton)
+                                                                                  True)
+                         ,settingAccessor enablePlans (toggleButtonGetActive (get enablePlansButton))
+                                                      (toggleButtonSetActive (get enablePlansButton))
+                         ,settingAccessor killPlans (toggleButtonGetActive (get killPlansButton))
+                                                    (toggleButtonSetActive (get killPlansButton))
+                         ]
+
 settingsButtonCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
 settingsButtonCallback ls = do
-  entrySetText (get usernameEntry) =<< fromMaybe "" <$> getSetting username
-  entrySetText (get passwordEntry) =<< fromMaybe "" <$> getSetting password
-  v <- getSetting viewMySide
-  toggleButtonSetActive (if v then get mySideButton else get goldSideButton) True
+  readTVarIO (get conf) >>= confToWidgets
 
     -- use of dialogRun to prevent the dialog from being destroyed on deleteEvent
   dialogRun (get settingsDialog) >>= \_ -> settingsSetCallback ls
@@ -2043,21 +1993,20 @@ initKeyList = do
 
 settingsSetCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
 settingsSetCallback ls = do
-  u <- getSetting username
-  p <- getSetting password
-  u' <- entryGetText (get usernameEntry)
-  p' <- entryGetText (get passwordEntry)
-  when ((u, p) /= (Just u', Just p')) $ setUsernameAndPassword u' p'
-  
-  v <- fromMaybe False . fmap fst . find snd . zip [True, False] <$> mapM toggleButtonGetActive [get mySideButton, get goldSideButton]
-  atomically $ modifyTVar (get conf) $ \c -> Settings.setSetting c viewMySide v
+  c <- readTVarIO (get conf)
+  c' <- ($ c) <$> widgetsToConf
 
   l <- listStoreToList ls
-  atomically $ modifyTVar (get conf) $ \c -> foldl' (\c' ((s,_,_),(_,mk)) -> Settings.setSetting c' s mk)
-                                                    c
-                                                    $ zip keyBindings l
+  let c'' = foldl' (\c ((s,_,_),(_,mk)) -> Settings.setSetting c s mk)
+                   c'
+                   $ zip keyBindings l
+
+  let f c = (Settings.getSetting' c username, Settings.getSetting' c password)
+      (u, p) = f c''
+  when (f c /= (u, p)) $ setUsernameAndPassword (fromMaybe "" u) (fromMaybe "" p)
   
-  saveSettings
+  get setConf c''
+  
   widgetHide (get settingsDialog)
 
 ----------------------------------------------------------------
@@ -2090,52 +2039,54 @@ main = do
   builder <- builderNew
   builderAddFromFile builder =<< dataFileName "client.glade"
 
-  window <- builderGetObject builder castToWindow "window"{-# LINE 2093 "Main.vhs" #-}
-  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 2094 "Main.vhs" #-}
-  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 2094 "Main.vhs" #-}
-  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 2094 "Main.vhs" #-}
-  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 2095 "Main.vhs" #-}
-  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 2095 "Main.vhs" #-}
-  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 2095 "Main.vhs" #-}
-  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 2096 "Main.vhs" #-}
-  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 2096 "Main.vhs" #-}
-  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 2096 "Main.vhs" #-}
-  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 2096 "Main.vhs" #-}
-  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 2096 "Main.vhs" #-}
-  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 2096 "Main.vhs" #-}
-  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 2097 "Main.vhs" #-}
-  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 2097 "Main.vhs" #-}
-  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 2097 "Main.vhs" #-}
-  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 2097 "Main.vhs" #-}
-  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 2097 "Main.vhs" #-}
-  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 2098 "Main.vhs" #-}
-  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 2098 "Main.vhs" #-}
-  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 2099 "Main.vhs" #-}
-  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 2099 "Main.vhs" #-}
-  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 2099 "Main.vhs" #-}
-  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 2099 "Main.vhs" #-}
-  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 2099 "Main.vhs" #-}
-  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 2099 "Main.vhs" #-}
-  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 2100 "Main.vhs" #-}
-  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 2101 "Main.vhs" #-}
-  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 2102 "Main.vhs" #-}
-  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 2103 "Main.vhs" #-}
-  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 2103 "Main.vhs" #-}
-  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 2104 "Main.vhs" #-}
-  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 2104 "Main.vhs" #-}
-  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 2105 "Main.vhs" #-}
-  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 2105 "Main.vhs" #-}
-  upButton <- builderGetObject builder castToButton "up-button"{-# LINE 2106 "Main.vhs" #-}
-  leftButton <- builderGetObject builder castToButton "left-button"{-# LINE 2106 "Main.vhs" #-}
-  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 2106 "Main.vhs" #-}
-  rightButton <- builderGetObject builder castToButton "right-button"{-# LINE 2106 "Main.vhs" #-}
-  downButton <- builderGetObject builder castToButton "down-button"{-# LINE 2106 "Main.vhs" #-}
-  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 2106 "Main.vhs" #-}
-  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 2106 "Main.vhs" #-}
-  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 2107 "Main.vhs" #-}
-  actionColumn <- builderGetObject builder castToTreeViewColumn "action-column"{-# LINE 2108 "Main.vhs" #-}
-  accelColumn <- builderGetObject builder castToTreeViewColumn "accel-column"{-# LINE 2108 "Main.vhs" #-}
-  keyTreeView <- builderGetObject builder castToTreeView "key-tree-view"{-# LINE 2109 "Main.vhs" #-}
+  window <- builderGetObject builder castToWindow "window"{-# LINE 2042 "Main.vhs" #-}
+  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 2043 "Main.vhs" #-}
+  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 2043 "Main.vhs" #-}
+  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 2043 "Main.vhs" #-}
+  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 2044 "Main.vhs" #-}
+  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 2044 "Main.vhs" #-}
+  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 2044 "Main.vhs" #-}
+  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 2045 "Main.vhs" #-}
+  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 2045 "Main.vhs" #-}
+  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 2045 "Main.vhs" #-}
+  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 2045 "Main.vhs" #-}
+  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 2045 "Main.vhs" #-}
+  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 2045 "Main.vhs" #-}
+  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 2046 "Main.vhs" #-}
+  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 2046 "Main.vhs" #-}
+  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 2046 "Main.vhs" #-}
+  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 2046 "Main.vhs" #-}
+  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 2046 "Main.vhs" #-}
+  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 2047 "Main.vhs" #-}
+  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 2047 "Main.vhs" #-}
+  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 2048 "Main.vhs" #-}
+  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 2048 "Main.vhs" #-}
+  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 2048 "Main.vhs" #-}
+  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 2048 "Main.vhs" #-}
+  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 2048 "Main.vhs" #-}
+  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 2048 "Main.vhs" #-}
+  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 2049 "Main.vhs" #-}
+  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 2050 "Main.vhs" #-}
+  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 2051 "Main.vhs" #-}
+  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 2052 "Main.vhs" #-}
+  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 2052 "Main.vhs" #-}
+  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 2053 "Main.vhs" #-}
+  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 2053 "Main.vhs" #-}
+  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 2054 "Main.vhs" #-}
+  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 2054 "Main.vhs" #-}
+  startButton <- builderGetObject builder castToButton "start-button"{-# LINE 2055 "Main.vhs" #-}
+  prevButton <- builderGetObject builder castToButton "prev-button"{-# LINE 2055 "Main.vhs" #-}
+  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 2055 "Main.vhs" #-}
+  nextButton <- builderGetObject builder castToButton "next-button"{-# LINE 2055 "Main.vhs" #-}
+  endButton <- builderGetObject builder castToButton "end-button"{-# LINE 2055 "Main.vhs" #-}
+  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 2055 "Main.vhs" #-}
+  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 2055 "Main.vhs" #-}
+  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 2056 "Main.vhs" #-}
+  actionColumn <- builderGetObject builder castToTreeViewColumn "action-column"{-# LINE 2057 "Main.vhs" #-}
+  accelColumn <- builderGetObject builder castToTreeViewColumn "accel-column"{-# LINE 2057 "Main.vhs" #-}
+  keyTreeView <- builderGetObject builder castToTreeView "key-tree-view"{-# LINE 2058 "Main.vhs" #-}
+  enablePlansButton <- builderGetObject builder castToCheckButton "enable-plans-button"{-# LINE 2059 "Main.vhs" #-}
+  killPlansButton <- builderGetObject builder castToCheckButton "kill-plans-button"{-# LINE 2059 "Main.vhs" #-}
 
   setupIcons <- replicateM (length pieceInfo) drawingAreaNew
   setupLabels <- replicateM (length pieceInfo) $ labelNew (Nothing :: Maybe String)
@@ -2304,13 +2255,21 @@ main = do
   gameroomRef <- newTVarIO Nothing
 
   conf <- newTVarIO Map.empty
+
+  (confAH, confFire) <- newAddHandler
+  let setConf c = do
+        atomically $ writeTVar conf c
+        saveSettings
+        confFire c
+  
   try (Settings.readSettings settingsPlace) >>= \case
     Right (c, _) -> atomically $ writeTVar conf c
     Left (_ :: IOException) -> return ()
 
   let buttonSet = ButtonSet{..}
-  [sendAH, resignAH, planAH, clearArrowsAH, leftAH, rightAH, upAH, downAH, currentAH, deleteNodeAH, deleteLineAH, deleteAllAH]
-    <- initKeyActions window buttonSet
+  [sendAH, resignAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH
+    ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH]
+       <- initKeyActions window buttonSet
 
   writeIORef globalEnv Env{..}
 
@@ -2326,6 +2285,6 @@ main = do
   widgetShowAll window
 
   -- user plays self (for testing)
---  dummyGame (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
+  dummyGame (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
 
   mainGUI
