@@ -15,6 +15,7 @@ import Data.Maybe
 
 dropPrefix :: Eq a => [a] -> [a] -> Maybe [a]
 dropPrefix [] l = Just l
+dropPrefix _ [] = Nothing
 dropPrefix (x:xs) (y:ys) | x == y = dropPrefix xs ys
                          | otherwise = Nothing
 
@@ -68,7 +69,6 @@ deleteNode (n:ns) f currentPos = let Node x f' = f !! n in case deleteNode ns f'
 
 ----------------------------------------------------------------
 
--- TODO: module enforces invariant
 -- invariants: currentPos, pathPos, viewPos always within tree; viewPos <= pathPos
 data GameTree a = GT
   {tree :: Forest a
