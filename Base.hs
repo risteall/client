@@ -1,13 +1,13 @@
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, PackageImports, NamedFieldPuns, UnicodeSyntax, TemplateHaskell, RankNTypes, MultiWayIf, DeriveGeneric, DeriveAnyClass #-}
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, RankNTypes, MultiWayIf, DeriveGeneric, DeriveAnyClass, PatternGuards #-}
 
 module Base (boardWidth, boardHeight, boardRange, Square, trapSquares, stepsPerMove, Colour(..), flipColour
             ,pieceInfo, nSetupRows, setupRows, Piece, Board, emptyBoard, Move(..), padMove
             ,moveToString, Reason(..), TimeControl(..), parseTimeControl, Arrow
             ,step, pieceToChar, squareToString, parseSetup, parseMove, moveToArrows, arrowLength, playMove, moveToPaths
-            ,moveToCaptureSet, stringToBoard, Step(..), singleStepsFrom, dragsFrom, addArrows, appendMoves, nSteps
+            ,moveToCaptureSet, stringToBoard, Step(..), legalDrag, singleStepsFrom, dragsFrom, addArrows, appendMoves, nSteps
             ,containsCapture, charToPiece, Direction(..), stringToSquare, updateReserve, readReason, harlog
             ,GenMove, showGenMove, Position(posDepth, posBoard), newPosition, readGenMove, playGenMove, timeAvailable, posToMove
-            ,posSetupPhase, charToColour, colourToServerChar
+            ,posSetupPhase, charToColour, colourToServerChar, colourArray, mapColourArray, PaddedStep, destination, dirToChar
             )
   where
 
@@ -108,13 +108,14 @@ stringToBoard s = emptyBoard // map (second Just) (f (0,0) s)
     f :: Square -> String -> [(Square, Piece)]
     f _ "" = []
     f sq _ | not (inRange boardRange sq) = []
-    f sq (' ':s) = f (next sq) s
+    f sq (' ':s) = munch (next sq) s
     f (x,y) (c:s) | not (isDigit c) = case charToPiece c of
                     Nothing -> f (0,y+1) s
-                    Just p -> ((x,y),p) : f (next (x,y)) s
-    f sq s = case readsPrec 0 s of
-      [] -> undefined
-      ((n,s'):_) -> f (iterate next sq !! n) s'
+                    Just p -> ((x,y),p) : munch (next (x,y)) s
+    f sq s = case first read $ span isDigit s of   -- readsPrec didn't work because of 3e4-type substrings
+      (n,s') -> munch (iterate next sq !! n) s'
+    munch (0,y) (c:s) | c /= ' ' && not (isDigit c) && isNothing (charToPiece c) = f (0,y) s
+    munch sq s = f sq s
     next (x,y) | inRange boardRange (x+1,y) = (x+1,y)
                | otherwise = (0,y+1)
 
@@ -168,9 +169,9 @@ adjacent sq = mapMaybe (destination sq) [East, North, West, South]
 frozen :: Board -> Square -> Bool
 frozen board sq = case board ! sq of
   Nothing -> False
-  Just (player, pieceType) -> let a = map (board !) (adjacent sq) in
-    any (maybe False (\(pl,pieceType2) -> pl /= player && pieceType2 > pieceType)) a
-    && not (any (maybe False ((== player) . fst)) a)
+  Just (player, pieceType) -> any (maybe False (\(pl,pieceType2) -> pl /= player && pieceType2 > pieceType)) a
+                              && not (any (maybe False ((== player) . fst)) a)
+    where a = map (board !) (adjacent sq)
 
 singleStepsFrom :: [Square] -> Board -> Colour -> [Step]
 singleStepsFrom squares board player = do
@@ -210,6 +211,21 @@ dragsFrom squares board player = do
         guard $ isNothing $ board ! sq''
         return (st', stepReverse st)
   pushes ++ pulls
+
+legalDrag :: Board -> Colour -> Step -> Step -> Bool
+legalDrag board player s1@(Step sq1 d1) s2@(Step sq2 d2)
+  | Just (p1, t1) <- board ! sq1
+  , Just (p2, t2) <- board ! sq2
+    = isNothing (board ! stepDest s1)
+      && sq1 == stepDest s2
+      && if | t1 > t2 -> p1 == player
+                      && p2 /= player
+                      && not (frozen board sq1)
+            | t1 < t2 -> p1 /= player
+                      && p2 == player
+                      && not (frozen board sq2)
+            | otherwise -> False
+  | otherwise = False
 
 singleSteps :: Board -> Colour -> [Step]
 singleSteps = singleStepsFrom (range boardRange)
@@ -476,3 +492,10 @@ parseMove ss = Move $ mapMaybe f ss
       sq <- stringToSquare [f,r]
       paddedStep p sq (charToDir d)
     f _ = Nothing
+
+----------------------------------------------------------------
+
+colourArray :: [a] -> Array Colour a
+colourArray = listArray (Gold,Silver)
+
+mapColourArray f = listArray (Gold,Silver) $ map f [Gold,Silver]

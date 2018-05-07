@@ -2,7 +2,7 @@
 
 {-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards #-}
 
-module GameTree(dropPrefix, derefNode, leftDepth, treeDepth,
+module GameTree(derefNode, leftDepth, treeDepth,
                 GameTree(tree, currentPos, viewPos), mkGameTree, pathEnd,
                 select, nextBranch, prevBranch,
                 deleteViewNode, deleteLine, deleteAll, deleteFromHere,
@@ -12,12 +12,6 @@ import Prelude hiding (GT)
 import Data.Tree
 import Data.List
 import Data.Maybe
-
-dropPrefix :: Eq a => [a] -> [a] -> Maybe [a]
-dropPrefix [] l = Just l
-dropPrefix _ [] = Nothing
-dropPrefix (x:xs) (y:ys) | x == y = dropPrefix xs ys
-                         | otherwise = Nothing
 
 setListElem :: [a] -> Int -> a -> [a]
 setListElem l n x = take n l ++ x : drop (n+1) l
@@ -153,20 +147,21 @@ deleteAll GT{tree, currentPos, viewPos} = GT{tree = f tree currentPos
 
 -- indices unchecked
 deleteFrom :: [Int] -> Forest a -> [Int] -> (Forest a, [Int] -> Maybe [Int])
-deleteFrom here forest currentPos = case dropPrefix here currentPos of
-  Just (n:_) -> let
+deleteFrom here forest currentPos = case stripPrefix here currentPos of
+  Just (n:_) -> (forest', f)
+    where
       forest' = modifyAt forest here (\f -> [f !! n])
-      f pos = case dropPrefix here pos of
+      f pos = case stripPrefix here pos of
         Just (n':l) | n == n' -> Just (here ++ 0 : l)
                     | otherwise -> Nothing
         _ -> Just pos
-     in (forest', f)
-  _ -> let
+  _ -> (forest', f)
+    where
       forest' = modifyAt forest here (const [])
-      f pos = case dropPrefix here pos of
+      f pos = case stripPrefix here pos of
         Just (_:_) -> Nothing
         _ -> Just pos
-     in (forest', f)
+
 
 deleteFromHere :: GameTree a -> GameTree a
 deleteFromHere GT{..}
