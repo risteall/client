@@ -1,0 +1,30 @@
+Missing features:
+  Left click for live traps
+  Other notations
+  Copy notation
+  Move annotations
+  Board orientation cue
+  Clocks for finished games
+  Double-headed arrows
+  Premoves
+  Chat
+
+Infelicities:
+  Check move legality
+  Check win conditions
+  Better layout
+  Optimise match, tree
+  Exception handling
+  Make move illegal but still draw it when arrowset modified
+  Logging
+  Harlog the shown position (after current move)
+  Grabbing arrows from empty squares doesn't work for inferred arrows
+  Move recalculated when tree changes, unnecessarily
+  Change error calls to something else
+  Cycling through branches loses current position; similarly for pathPos & arrows
+  What is the point of the Update type ?
+  fromServer / getUpdates mess
+
+Bugs:
+  Kill threads on game end
+  Key selector: exclude modifiers

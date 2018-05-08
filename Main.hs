@@ -64,40 +64,6 @@ import Paths_nosteps
 
 ----------------------------------------------------------------
 
-{-
-  Missing features:
-    Left click for live traps
-    Other notations
-    Copy notation
-    Move annotations
-    Board orientation cue
-    Clocks for finished games
-    Double-headed arrows
-    Premoves
-    Chat
-
-  Infelicities:
-    Check move legality
-    Check win conditions
-    Better layout
-    Optimise match, tree
-    Exception handling
-    Make move illegal but still draw it when arrowset modified
-    Logging
-    Harlog the shown position (after current move)
-    Grabbing arrows from empty squares doesn't work for inferred arrows
-    Move recalculated when tree changes, unnecessarily
-    Change error calls to something else
-    Cycling through branches loses current position; similarly for pathPos & arrows
-    What is the point of the Update type ?
-
-  Bugs:
-    Kill threads on game end
-    Key selector: exclude modifiers
--}
-
-----------------------------------------------------------------
-
 botLadderBots :: IO [BotLadderBot]
 botLadderBots = join $ readTVarIO (get botLadderBotsRef)
 
@@ -293,7 +259,7 @@ toServer (gsurl, sid) auth requestChan responseChan = forever $ try f >>= \case
             RequestResign _ -> void $ arimaaPost gsurl [("action", "resign"), ("sid", sid), ("auth", auth)]
           )
 
-getUpdates :: [(String, String)] -> Bool -> TChan Update -> IO Bool
+getUpdates :: [(String, String)] -> Bool -> TChan Update -> IO (Bool, Bool)
 getUpdates response started updateChan = do
 --  forM_ response $ uncurry $ printf "%s: %s\n"
 --  putStrLn $ replicate 64 '-'
@@ -307,17 +273,32 @@ getUpdates response started updateChan = do
     when (not (null moves)) $ mapM_ (send . UpdateMove)
                                     $ map (,Nothing) (init moves) ++ [(last moves, read <$> lookup "lastmoveused" response)]
 
-  forM_ (sequenceA (map (\s -> lookup s response >>= readMaybe)
-                        ["tcwreserve2", "tcbreserve2", "timeonserver"]))
-        $ \[a, b, c] -> do
-    t <- truncate <$> getPOSIXTime
-    send $ UpdateClock (colourArray [a, b], t - c)
+  finished <- case lookup "result" response of
+    Just [c1,c2] | Just r <- readReason c2 -> do
+      send $ UpdateResult $ (if elem c1 "wg" then Gold else Silver, r)
+      return True
+    _ -> do
 
-  case lookup "result" response of
-    Just [c1,c2] | Just r <- readReason c2 -> send $ UpdateResult $ (if elem c1 "wg" then Gold else Silver, r)
-    _ -> return ()
+      forM_ [(Gold, "tcwreserve2"), (Silver, "tcbreserve2")] $ \(c, s) ->
+        forM_ (lookup s response >>= readMaybe) $ \t ->
+          send $ UpdateClock (c, t)
 
-  return (started || start)
+      let playerUsed = case lookup "turn" response of
+            Just [c] | Just player <- charToColour c
+                     , Just s <- lookup (colourToServerChar player : "used") response
+                     , Just t <- readMaybe s
+                       -> Just (player, t)
+            _ -> Nothing
+
+      let [gameUsed, t] = map (\s -> lookup s response >>= readMaybe )
+                              ["tcgamenow", "timeonserver"]
+
+      t' <- truncate <$> getPOSIXTime
+      send $ UpdateUsed {playerUsed, gameUsed, timeDiff = (t' -) <$> t}
+
+      return False
+
+  return (started || start, finished)
 
 fromServer :: PlayInfo -> [(String, String)] -> Bool -> TChan Update -> IO ()
 fromServer (gsurl, sid) response started updateChan = do
@@ -332,8 +313,8 @@ fromServer (gsurl, sid) response started updateChan = do
                                     ,("chatlength", cl)
                                     ]
 
-  started <- getUpdates response' started updateChan
-  fromServer (gsurl, sid) response' started updateChan
+  (started, finished) <- getUpdates response' started updateChan
+  when (not finished) $ fromServer (gsurl, sid) response' started updateChan
 
 channelEvent :: TChan a -> MomentIO (Event a)
 channelEvent chan = do
@@ -358,19 +339,10 @@ setServerGame gameInfo = handle (\(Protocol.ServerError s) -> alert s) $ do
 
   response <- arimaaPost gsurl [("action", "gamestate"), ("sid", sid), ("wait", "0")]
 
-  started <- getUpdates response False updateChan
-
-  case lookup "turn" response of
-    Just [c] | Just player <- charToColour c
-             , Just s <- lookup (colourToServerChar player : "used") response
-             , Just t <- readMaybe s
-               -> atomically $ writeTChan updateChan $ UpdateUsed (player, t)
-    _ -> return ()
-
-  forM_ (lookup "tcgamenow" response >>= readMaybe) $ atomically . writeTChan updateChan . UpdateGameUsed
+  (started, finished) <- getUpdates response False updateChan
 
   -- TODO: thread handling; error checking
-  t1 <- forkIO $ fromServer (gsurl, sid) response started updateChan
+  t1 <- forkIO $ when (not finished) $ fromServer (gsurl, sid) response started updateChan
   t2 <- forkIO $ toServer (gsurl, sid) (fromJust (lookup "auth" response)) requestChan responseChan
 
   postGUIAsync
@@ -399,19 +371,10 @@ watchGame gid = handle (\(Protocol.ServerError s) -> alert s) $ do
 
   response <- arimaaPost gsurl [("action", "gamestate"), ("sid", sid), ("wait", "0")]
 
-  started <- getUpdates response False updateChan
-
-  case lookup "turn" response of
-    Just [c] | Just player <- charToColour c
-             , Just s <- lookup (colourToServerChar player : "used") response
-             , Just t <- readMaybe s
-               -> atomically $ writeTChan updateChan $ UpdateUsed (player, t)
-    _ -> return ()
-
-  forM_ (lookup "tcgamenow" response >>= readMaybe) $ atomically . writeTChan updateChan . UpdateGameUsed
+  (started, finished) <- getUpdates response False updateChan
 
   -- TODO: thread handling; error checking
-  t1 <- forkIO $ fromServer (gsurl, sid) response started updateChan
+  t1 <- forkIO $ when (not finished) $ fromServer (gsurl, sid) response started updateChan
 
   let tc = fromMaybe (fromJust (parseTimeControl "0/0")) $ do
         s <- lookup "timecontrol" response
@@ -868,54 +831,54 @@ main = do
   builder <- builderNew
   builderAddFromFile builder =<< dataFileName "client.glade"
 
-  window <- builderGetObject builder castToWindow "window"{-# LINE 871 "Main.vhs" #-}
-  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 872 "Main.vhs" #-}
-  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 872 "Main.vhs" #-}
-  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 872 "Main.vhs" #-}
-  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 873 "Main.vhs" #-}
-  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 873 "Main.vhs" #-}
-  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 873 "Main.vhs" #-}
-  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 874 "Main.vhs" #-}
-  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 874 "Main.vhs" #-}
-  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 874 "Main.vhs" #-}
-  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 874 "Main.vhs" #-}
-  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 874 "Main.vhs" #-}
-  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 874 "Main.vhs" #-}
-  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 875 "Main.vhs" #-}
-  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 875 "Main.vhs" #-}
-  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 875 "Main.vhs" #-}
-  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 875 "Main.vhs" #-}
-  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 875 "Main.vhs" #-}
-  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 876 "Main.vhs" #-}
-  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 876 "Main.vhs" #-}
-  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 877 "Main.vhs" #-}
-  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 877 "Main.vhs" #-}
-  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 877 "Main.vhs" #-}
-  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 877 "Main.vhs" #-}
-  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 877 "Main.vhs" #-}
-  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 877 "Main.vhs" #-}
-  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 878 "Main.vhs" #-}
-  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 879 "Main.vhs" #-}
-  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 880 "Main.vhs" #-}
-  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 881 "Main.vhs" #-}
-  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 881 "Main.vhs" #-}
-  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 882 "Main.vhs" #-}
-  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 882 "Main.vhs" #-}
-  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 883 "Main.vhs" #-}
-  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 883 "Main.vhs" #-}
-  startButton <- builderGetObject builder castToButton "start-button"{-# LINE 884 "Main.vhs" #-}
-  prevButton <- builderGetObject builder castToButton "prev-button"{-# LINE 884 "Main.vhs" #-}
-  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 884 "Main.vhs" #-}
-  nextButton <- builderGetObject builder castToButton "next-button"{-# LINE 884 "Main.vhs" #-}
-  endButton <- builderGetObject builder castToButton "end-button"{-# LINE 884 "Main.vhs" #-}
-  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 884 "Main.vhs" #-}
-  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 884 "Main.vhs" #-}
-  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 885 "Main.vhs" #-}
-  actionColumn <- builderGetObject builder castToTreeViewColumn "action-column"{-# LINE 886 "Main.vhs" #-}
-  accelColumn <- builderGetObject builder castToTreeViewColumn "accel-column"{-# LINE 886 "Main.vhs" #-}
-  keyTreeView <- builderGetObject builder castToTreeView "key-tree-view"{-# LINE 887 "Main.vhs" #-}
-  enablePlansButton <- builderGetObject builder castToCheckButton "enable-plans-button"{-# LINE 888 "Main.vhs" #-}
-  killPlansButton <- builderGetObject builder castToCheckButton "kill-plans-button"{-# LINE 888 "Main.vhs" #-}
+  window <- builderGetObject builder castToWindow "window"{-# LINE 834 "Main.vhs" #-}
+  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 835 "Main.vhs" #-}
+  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 835 "Main.vhs" #-}
+  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 835 "Main.vhs" #-}
+  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 836 "Main.vhs" #-}
+  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 836 "Main.vhs" #-}
+  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 836 "Main.vhs" #-}
+  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 837 "Main.vhs" #-}
+  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 837 "Main.vhs" #-}
+  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 837 "Main.vhs" #-}
+  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 837 "Main.vhs" #-}
+  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 837 "Main.vhs" #-}
+  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 837 "Main.vhs" #-}
+  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 838 "Main.vhs" #-}
+  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 838 "Main.vhs" #-}
+  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 838 "Main.vhs" #-}
+  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 838 "Main.vhs" #-}
+  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 838 "Main.vhs" #-}
+  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 839 "Main.vhs" #-}
+  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 839 "Main.vhs" #-}
+  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 840 "Main.vhs" #-}
+  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 840 "Main.vhs" #-}
+  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 840 "Main.vhs" #-}
+  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 840 "Main.vhs" #-}
+  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 840 "Main.vhs" #-}
+  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 840 "Main.vhs" #-}
+  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 841 "Main.vhs" #-}
+  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 842 "Main.vhs" #-}
+  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 843 "Main.vhs" #-}
+  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 844 "Main.vhs" #-}
+  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 844 "Main.vhs" #-}
+  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 845 "Main.vhs" #-}
+  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 845 "Main.vhs" #-}
+  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 846 "Main.vhs" #-}
+  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 846 "Main.vhs" #-}
+  startButton <- builderGetObject builder castToButton "start-button"{-# LINE 847 "Main.vhs" #-}
+  prevButton <- builderGetObject builder castToButton "prev-button"{-# LINE 847 "Main.vhs" #-}
+  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 847 "Main.vhs" #-}
+  nextButton <- builderGetObject builder castToButton "next-button"{-# LINE 847 "Main.vhs" #-}
+  endButton <- builderGetObject builder castToButton "end-button"{-# LINE 847 "Main.vhs" #-}
+  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 847 "Main.vhs" #-}
+  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 847 "Main.vhs" #-}
+  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 848 "Main.vhs" #-}
+  actionColumn <- builderGetObject builder castToTreeViewColumn "action-column"{-# LINE 849 "Main.vhs" #-}
+  accelColumn <- builderGetObject builder castToTreeViewColumn "accel-column"{-# LINE 849 "Main.vhs" #-}
+  keyTreeView <- builderGetObject builder castToTreeView "key-tree-view"{-# LINE 850 "Main.vhs" #-}
+  enablePlansButton <- builderGetObject builder castToCheckButton "enable-plans-button"{-# LINE 851 "Main.vhs" #-}
+  killPlansButton <- builderGetObject builder castToCheckButton "kill-plans-button"{-# LINE 851 "Main.vhs" #-}
 
   setupIcons <- replicateM (length pieceInfo) drawingAreaNew
   setupLabels <- replicateM (length pieceInfo) $ labelNew (Nothing :: Maybe String)

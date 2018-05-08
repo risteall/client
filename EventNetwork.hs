@@ -192,9 +192,10 @@ data Request = RequestStart | RequestMove GenMove | RequestResign Colour
 data Update = UpdateStart
             | UpdateMove (GenMove, Maybe Int)
             | UpdateResult (Colour, Reason)
-            | UpdateClock (Array Colour Int, Int)
-            | UpdateUsed (Colour, Int)
-            | UpdateGameUsed Int
+            | UpdateClock (Colour, Int)
+            | UpdateUsed {playerUsed :: Maybe (Colour, Int), gameUsed :: Maybe Int, timeDiff :: Maybe Int}
+--            | UpdateUsed (Colour, Int)
+  --          | UpdateGameUsed Int
               deriving Show
 
 data GameState = GameState
@@ -452,6 +453,104 @@ bigClockLabel clock extra dran = "<span weight=\"bold\" foreground=\"" ++ colour
            | clock <= 30 = "orange"
            | otherwise = "blue"
 
+augmentTimeUsed user minDiff (t, diff) | t == 0 = 0
+                                       | otherwise = t + fromMaybe 0 (liftA2 (-) diff minDiff)
+                                                       + if user then 2 else 0
+
+timeUsed :: GameParams
+         -> Colour
+         -> Behavior (Maybe Int)
+         -> Behavior Bool
+         -> Behavior Bool
+         -> Event Update
+         -> Event ()
+         -> MomentIO (Behavior Int)
+timeUsed params player bMinDiff clocksRun isDran eUpdate eTick
+    = fmap (liftA2 (augmentTimeUsed (isUser params ! player))
+                   bMinDiff)
+           timeUsed'
+  where
+    timeUsed' :: MomentIO (Behavior (Int, Maybe Int))
+    timeUsed' = (fmap . fmap) (first (`div` tickFrequency))
+                              $ accumB (0, Nothing) $ unions [whenE ((&&) <$> clocksRun <*> isDran) $ first (+1) <$ eTick
+                                                             ,const <$> filterJust (f <$> isDran <@> eUpdate)
+                                                             ]
+      where
+        f True UpdateMove{} = Just (0, Nothing)
+        f _ UpdateUsed{playerUsed = Just (c, t), timeDiff} | c == player = Just (tickFrequency * t, timeDiff)
+        f _ _ = Nothing
+
+gameTimeUsed :: GameParams -> Behavior (Maybe Int) -> Behavior Bool -> Event Update -> Event () -> MomentIO (Behavior Int)
+gameTimeUsed params bMinDiff clocksRun eUpdate eTick
+    = fmap (liftA2 (augmentTimeUsed (or (isUser params)))
+                   bMinDiff) gameTimeUsed'
+  where
+    gameTimeUsed' = (fmap . fmap) (first (`div` tickFrequency))
+                                  $ accumB (0, Nothing) $ unions [whenE clocksRun $ first (+1) <$ eTick
+                                                                 ,filterJust $ f <$> eUpdate
+                                                                 ]
+      where
+        f UpdateUsed{gameUsed = Just t, timeDiff} = Just (const (t * tickFrequency, timeDiff))
+        f _ = Nothing
+
+data Clocks = Clocks
+  {state :: Int
+  ,used :: Int
+  ,bigLabel :: String
+  ,usedLabel :: String
+  }
+
+mkClocks :: TimeControl -> Bool -> Int -> Int -> Clocks
+mkClocks tc run state used
+    = Clocks{state, used
+            ,bigLabel = bigClockLabel clock extra run
+            ,usedLabel = "Move time: " ++ showClockDuration used
+            }
+  where
+    clock = timeAvailable tc state - used
+    extra = state + increment tc - timeAvailable tc state
+
+clocks :: GameParams
+       -> Behavior GameState
+       -> Event Update
+       -> Event ()
+       -> MomentIO (Colour -> MomentIO (Behavior Clocks), Behavior String)
+clocks params gameState eUpdate eTick = do
+  let
+    eDiff = filterJust (f <$> eUpdate)
+      where f UpdateUsed{timeDiff} = timeDiff
+            f _ = Nothing
+
+    -- attempt to account for lag suggested by lightvector in chat
+  bMinDiff <- accumB Nothing $ (\d -> Just . maybe d (min d)) <$> eDiff
+
+  let
+    isDran player = ((== player) . posToMove . position) <$> gameState
+    clocksRun = (\gs -> started gs && isNothing (result gs)) <$> gameState
+
+    clockState :: Colour -> MomentIO (Behavior Int)
+    clockState player = accumB (initialReserve (timeControl params))
+                               $ filterJust (f <$> isDran player <@> eUpdate)
+      where
+        f True (UpdateMove (_,x)) = updateReserve (timeControl params) <$> x
+        f _ (UpdateClock (c,t)) | c == player = Just (const t)
+        f _ _ = Nothing
+
+
+    gameLabel n = case gameLimit (timeControl params) of
+      Left 0 -> "No game limit"
+      Right 0 -> "No game limit"
+      Left l -> showClockDuration $ l - n
+      Right l -> printf "Game limit: %d moves" l
+
+  gUsed <- gameTimeUsed params bMinDiff clocksRun eUpdate eTick
+  
+  return (\player -> liftA2 (liftA3 (mkClocks (timeControl params))
+                                    (liftA2 (&&) clocksRun (isDran player)))
+                            (clockState player)
+                            (timeUsed params player bMinDiff clocksRun (isDran player) eUpdate eTick),
+          gameLabel <$> gUsed)
+    
 -- problem?: redundancy between gameState and tree
 gameNetwork (params :: GameParams)
             (initialTree :: Forest GameTreeNode)
@@ -556,14 +655,19 @@ gameNetwork (params :: GameParams)
                                      ]
         return $ isJust <$> k
 
-      eMoveTime = filterJust (f <$> (posToMove . position <$> gameState) <*> bTimeUsed ! Gold <*> bTimeUsed ! Silver <@> eUpdate)
-        where f _ _ _ (UpdateMove (m, Just t)) = Just (m, t)
-              f c gu su (UpdateMove (m, Nothing)) = Just (m, case c of Gold -> gu; Silver -> su)
+      eMoveTime = filterJust (f <$> (posToMove . position <$> gameState)
+                                <*> bClocks ! Gold
+                                <*> bClocks ! Silver
+                                <@> eUpdate)
+        where f _ _ _ (UpdateMove (m, Just t)) = Just (m, Just t)
+              f c gc sc (UpdateMove (m, Nothing)) = Just (m, g (case c of Gold -> gc; Silver -> sc))
               f _ _ _ _ = Nothing
+              g cl | used cl == 0 = Nothing
+                   | otherwise = Just $ used cl
   
       -- problem: redundant calls to playGenMove
       eMove = f <$> (position <$> gameState) <@> eMoveTime
-        where f pos (m,x) = either error (\p -> GameTreeNode m p (Just x) Nothing) (playGenMove pos m)
+        where f pos (m,x) = either error (\p -> GameTreeNode m p x Nothing) (playGenMove pos m)
 
   ePlanMove <- buttonAction (get (planButton . buttonSet))
                             ePlan
@@ -613,59 +717,19 @@ gameNetwork (params :: GameParams)
                                                                             -> ShadowBoard b r (if r ! i == 0 then c else i)) <$ e)
                                                                [0..] (reverse eSetupIcon)
 
-  let eDiff = filterJust (f <$> eUpdate)
-        where f (UpdateClock (_, diff)) = Just diff
-              f _ = Nothing
+  (makeClocks, gameClockLabel) <- clocks params gameState eUpdate eTick
+  onChanges $ labelSetText (get gameClock) <$> gameClockLabel
 
-  -- bDiff :: Behavior (Maybe (Int, Int))  -- (last diff, min diff)
-  bTimeDiff <- accumB Nothing $ (\n -> Just . (n,) . maybe n (min n . snd)) <$> eDiff
+  bClocks <- (sequenceA $ mapColourArray makeClocks) :: MomentIO (Array Colour (Behavior Clocks))
 
-    -- attempt to account for lag suggested by lightvector in chat
-  let bLag = maybe 0 (uncurry (-)) <$> bTimeDiff
-
-  reactimate' =<< changes (printf "Lag: %d\n" <$> bLag)
-
-  let isDran player = ((== player) . posToMove . position) <$> gameState
-      clocksRun = (\gs -> started gs && isNothing (result gs)) <$> gameState
-
-      timeUsed, clockState, timeExtra, clock :: Colour -> MomentIO (Behavior Int)
-      timeUsed player = (fmap . fmap) (`div` tickFrequency)
-                                      $ accumB 0 $ unions [whenE ((&&) <$> clocksRun <*> isDran player) $ (+1) <$ eTick
-                                                          ,const <$> filterJust (f <$> isDran player <@> eUpdate)
-                                                          ]
-        where
-          f True (UpdateMove _) = Just 0
-          f _ (UpdateUsed (c,n)) | c == player = Just (tickFrequency * n)
-          f _ _ = Nothing
-
-      clockState player = accumB (initialReserve (timeControl params))
-                                 $ filterJust (f <$> isDran player <@> eUpdate)
-        where
-          f True (UpdateMove (_,x)) = updateReserve (timeControl params) <$> x
-          f _ (UpdateClock (a,_)) = Just (const (a ! player))
-          f _ _ = Nothing
-      timeExtra = (fmap . fmap . fmap) (\a -> a + increment (timeControl params) - timeAvailable (timeControl params) a)
-                                       clockState
-
-      clock p = liftA2 (liftA3 (\l a b -> timeAvailable (timeControl params) a
-                                          - b - l
-                                          - if isUser params ! p then 2 else 0)
-                               bLag)
-                       (clockState p) (timeUsed p)
-
-  bTimeUsed <- colourArray <$> mapM timeUsed [Gold, Silver]
-  
   -- note assumption that player names do not contain markup
   forM_ [Gold, Silver] $ \c -> do
     let nameString = names params ! c ++ maybe "" (printf " (%d)") (ratings params ! c)
-    cl' <- clock c
-    extra <- timeExtra c
-    let bigLabel = liftA3 bigClockLabel cl' extra (liftA2 (&&) clocksRun (isDran c))
     sequence_ $ zipWith3 (\top bottom s -> onChanges $ (\f s -> labelSetMarkup (if (c == Gold) == f then get top else get bottom) s)
                                                             <$> flipped <*> s)
                          [topPlayer, topClock, topUsedClock]
                          [bottomPlayer, bottomClock, bottomUsedClock]
-                         [pure nameString, bigLabel, ("Move time: " ++) . showClockDuration <$> bTimeUsed ! c]
+                         [pure nameString, bigLabel <$> bClocks ! c, usedLabel <$> bClocks ! c]
 
   let drawB = (\node sb as la lt ms v -> if setupPhase node
                                                  then drawSetup node sb (get icons)
@@ -702,16 +766,6 @@ gameNetwork (params :: GameParams)
   let f gs = printf "%s (%s)" (show (timeControl params)) (if rated params then "rated" else "unrated")
              ++ maybe "" (\(c,r) -> printf " | %s won (%s)" (show c) (show r)) (result gs)
     in onChanges $ labelSetText (get gameLabel) <$> (f <$> gameState)
-
-  gameTimeUsed <- accumB 0 $ unions [whenE clocksRun $ (+1) <$ eTick
-                                    ,filterJust $ (\case UpdateGameUsed t -> Just (const (t * tickFrequency)); _ -> Nothing) <$> eUpdate
-                                    ]
-  let f n = case gameLimit (timeControl params) of
-        Left 0 -> "No game limit"
-        Right 0 -> "No game limit"
-        Left l -> showClockDuration $ l - div n tickFrequency
-        Right l -> printf "Game limit: %d moves" l
-    in onChanges $ labelSetText (get gameClock) <$> (f <$> gameTimeUsed)
 
 ----------------------------------------------------------------
 
