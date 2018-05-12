@@ -1,6 +1,6 @@
 {-# LANGUAGE TupleSections, NamedFieldPuns, DeriveGeneric, DeriveAnyClass #-}
 
-module Match(MoveSet(..), currentMove, makeMoveSet, setCapture, toggleCapture) where
+module Match(MoveSet(..), currentMove, makeMoveSet, setCapture, toggleCapture, matchArrows) where
 
 import Data.Function
 import Data.Ord(comparing)
@@ -65,16 +65,16 @@ relevantAtoms board player match traps accum n
 
     relevantSquares = iterate spread (union traps (Map.foldl' union [] usefulSquares)) !! (2 * spareSteps)
 
+matchArrows :: [Arrow] -> [Arrow] -> Bool
+matchArrows [] _ = True
+matchArrows ((source,dest):as) move = case partition ((== source) . fst) move of
+  ([(_,d)], move') | d == dest -> matchArrows as move'
+                   | otherwise -> matchArrows ((d, dest) : as) move'
+  _ -> False
+
 match :: Map Piece [Arrow] -> [Square] -> Map Piece [Arrow] -> [Square] -> Bool
 match match traps move captures = all (\(p, as) -> maybe False (matchArrows as) (Map.lookup p move)) (Map.assocs match)
                                   && all (`elem` captures) traps
-  where
-    matchArrows :: [Arrow] -> [Arrow] -> Bool
-    matchArrows [] _ = True
-    matchArrows ((source,dest):as) move = case partition ((== source) . fst) move of
-      ([(_,d)], move') | d == dest -> matchArrows as move'
-                       | otherwise -> matchArrows ((d, dest) : as) move'
-      _ -> False
 
 type MoveInfo = (Move, Board, Map Piece [Arrow], Map Square [Piece])
 

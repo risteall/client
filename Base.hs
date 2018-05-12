@@ -6,7 +6,7 @@ module Base (boardWidth, boardHeight, boardRange, Square, trapSquares, stepsPerM
             ,step, pieceToChar, squareToString, parseSetup, parseMove, moveToArrows, arrowLength, playMove, moveToPaths
             ,moveToCaptureSet, stringToBoard, Step(..), legalDrag, singleStepsFrom, dragsFrom, addArrows, appendMoves, nSteps
             ,containsCapture, charToPiece, Direction(..), stringToSquare, updateReserve, readReason, harlog
-            ,GenMove, showGenMove, Position(posDepth, posBoard), newPosition, readGenMove, playGenMove, timeAvailable, posToMove
+            ,GenMove, showGenMove, Position(Position, posDepth, posBoard), newPosition, readGenMove, playGenMove, timeAvailable, posToMove
             ,posSetupPhase, charToColour, colourToServerChar, colourArray, mapColourArray, PaddedStep, destination, dirToChar
             )
   where
@@ -22,7 +22,7 @@ import Data.List.Split
 import Text.Read hiding (step, lift)
 import Control.Applicative
 import Data.Bifunctor
-import Data.Function
+--import Data.Function
 import Generics.Deriving (conNameOf)
 
 import GHC.Generics (Generic)
@@ -71,6 +71,9 @@ type Piece = (Colour, Int)
 type Board = Array Square (Maybe Piece)
 
 emptyBoard = listArray boardRange $ repeat Nothing
+
+showBoard :: Board -> String
+showBoard b = concatMap (\y -> map (\x -> maybe ' ' pieceToChar (b ! (x,y))) [0..7] ++ "\n") [0..7]
 
 harlog :: Board -> Double
 harlog board = (f Gold - f Silver) / (g*log(8*16/7/15))
@@ -302,6 +305,9 @@ showGenMove (Left setup) = intercalate " " $ map (\(sq, piece) -> pieceToChar pi
 showGenMove (Right move) = show move
 
 data Position = Position {posBoard :: Board, posDepth :: Int, posHistory :: [(Colour, Board)]}
+
+instance Show Position where
+  show = showBoard . posBoard
 
 instance Eq Position where
   Position b1 n1 h1 == Position b2 n2 h2 = b1 == b2 && h1 == h2 && mod n1 2 == mod n2 2

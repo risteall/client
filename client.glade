@@ -819,6 +819,63 @@
 		    <property name="top_attach">1</property>
 		  </packing>
 		</child>
+
+		<child>
+		  <object class="GtkBox" id="plans-box">
+		    <property name="visible">True</property>
+		    <property name="orientation">vertical</property>
+<!--		    <property name="spacing">5</property>-->
+		    <child>
+		      <object class="GtkRadioButton" id="no-plans-button">
+			<property name="visible">True</property>
+			<property name="label">Disable plan variations</property>
+			<!--		<property name="can_focus">True</property>-->
+		      </object>
+		    </child>
+		    <child>
+		      <object class="GtkRadioButton" id="plans-button">
+			<property name="visible">True</property>
+			<property name="label">Allow plan variations</property>
+			<!--		<property name="can_focus">True</property>-->
+			<property name="group">no-plans-button</property>
+		      </object>
+		    </child>
+		    <child>
+		      <object class="GtkRadioButton" id="premoves-button">
+			<property name="visible">True</property>
+			<property name="label">Allow plans and premoves</property>
+			<!--		<property name="can_focus">True</property>-->
+			<property name="group">no-plans-button</property>
+		      </object>
+		    </child>
+		  </object>
+		  <packing>
+		    <property name="left_attach">0</property>
+		    <property name="top_attach">2</property>
+		    <property name="width">2</property>
+		  </packing>
+		</child>
+
+		<child>
+		  <object class="GtkBox">
+		    <property name="visible">True</property>
+		    <property name="orientation">horizontal</property>
+		    <property name="spacing">5</property>
+		    <child>
+		      <object class="GtkCheckButton" id="kill-plans-button">
+			<property name="visible">True</property>
+			<property name="label">Kill plans at the current position when a move comes in</property>
+		      </object>
+		    </child>
+		  </object>
+		  <packing>
+		    <property name="left_attach">0</property>
+		    <property name="top_attach">3</property>
+		    <property name="width">2</property>
+		  </packing>
+		</child>
+
+
 		<child>
 		  <object class="GtkBox" id="view-side-box">
 		    <property name="visible">True</property>
@@ -848,58 +905,54 @@
 		  </object>
 		  <packing>
 		    <property name="left_attach">0</property>
-		    <property name="top_attach">2</property>
-		    <property name="width">2</property>
-		  </packing>
-		</child>
-		<child>
-		  <object class="GtkBox">
-		    <property name="visible">True</property>
-		    <property name="orientation">horizontal</property>
-		    <property name="spacing">5</property>
-		    <child>
-		      <object class="GtkCheckButton" id="enable-plans-button">
-			<property name="visible">True</property>
-		      </object>
-		    </child>
-		    <child>
-		      <object class="GtkLabel">
-			<property name="visible">True</property>
-			<property name="label">Enable plan variations</property>
-		      </object>
-		    </child>
-		  </object>
-		  <packing>
-		    <property name="left_attach">0</property>
-		    <property name="top_attach">3</property>
-		    <property name="width">2</property>
-		  </packing>
-		</child>
-
-		<child>
-		  <object class="GtkBox">
-		    <property name="visible">True</property>
-		    <property name="orientation">horizontal</property>
-		    <property name="spacing">5</property>
-		    <child>
-		      <object class="GtkCheckButton" id="kill-plans-button">
-			<property name="visible">True</property>
-		      </object>
-		    </child>
-		    <child>
-		      <object class="GtkLabel">
-			<property name="visible">True</property>
-			<property name="label">Kill plans at current position when move comes in</property>
-		      </object>
-		    </child>
-		  </object>
-		  <packing>
-		    <property name="left_attach">0</property>
 		    <property name="top_attach">4</property>
 		    <property name="width">2</property>
 		  </packing>
 		</child>
 
+		<child>
+		  <object class="GtkBox" id="notation-box">
+		    <property name="visible">True</property>
+		    <property name="orientation">horizontal</property>
+		    <property name="spacing">5</property>
+		    <child>
+		      <object class="GtkLabel">
+			<property name="visible">True</property>
+			<property name="label">Notation:</property>
+		      </object>
+		    </child>
+		    <child>
+		      <object class="GtkRadioButton" id="long-notation-button">
+			<property name="visible">True</property>
+			<property name="label">long</property>
+			<!--		<property name="can_focus">True</property>-->
+		      </object>
+		    </child>
+		    <child>
+		      <object class="GtkRadioButton" id="compressed-notation-button">
+			<property name="visible">True</property>
+			<property name="label">compressed</property>
+			<!--		<property name="can_focus">True</property>-->
+			<property name="group">long-notation-button</property>
+		      </object>
+		    </child>
+		    <child>
+		      <object class="GtkRadioButton" id="silvermitt-notation-button">
+			<property name="visible">True</property>
+			<property name="label">SilverMitt</property>
+			<!--		<property name="can_focus">True</property>-->
+			<property name="group">long-notation-button</property>
+		      </object>
+		    </child>
+		  </object>
+		  <packing>
+		    <property name="left_attach">0</property>
+		    <property name="top_attach">5</property>
+		    <property name="width">2</property>
+		  </packing>
+		</child>
+
+		
 	      </object>
 	      <packing>
 	      	<property name="tab_label">General</property>

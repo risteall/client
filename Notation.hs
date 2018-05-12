@@ -1,6 +1,6 @@
 {-# LANGUAGE TupleSections, RankNTypes, DeriveFunctor #-}
 
-module Notation where
+module Notation(Notation(..), showMove) where
 
 import Data.List.Split
 import Data.List
@@ -15,7 +15,7 @@ import Data.Functor.Constant
 
 import Base
 
-data Notation = Long | Compressed | SilverMitt deriving (Show, Read)
+data Notation = Long | Compressed | SilverMitt deriving (Show, Read, Eq, Ord, Bounded, Ix, Enum)
 
 showMove :: Notation -> Board -> Colour -> Move -> String
 showMove Long = \_ _ -> moveToString
@@ -101,7 +101,7 @@ exprToArrows (Expr a b) = a ++ b
 setListElem :: [a] -> Int -> a -> [a]
 setListElem l n x = take n l ++ x : drop (n+1) l
 
-data L =  L {unL :: forall f b. Functor f => (b -> f b) -> Expr b -> f (Expr b)}
+newtype L =  L {unL :: forall f b. Functor f => (b -> f b) -> Expr b -> f (Expr b)}
 
 lenses :: Expr a -> [L]
 lenses (Expr friendly enemy) = map enemyLens (reverse [0 .. length enemy - 1])

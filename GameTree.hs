@@ -1,20 +1,56 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards #-}
+{-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards, BangPatterns #-}
 
-module GameTree(derefNode, leftDepth, treeDepth,
+module GameTree(deref, derefNode, leftDepth, treeDepth,
                 GameTree(tree, currentPos, viewPos), mkGameTree, pathEnd,
                 select, nextBranch, prevBranch,
                 deleteViewNode, deleteLine, deleteAll, deleteFromHere,
-                treePlan, treeMove) where
+                treePlan, treeMove, mapCurrentToView) where
 
 import Prelude hiding (GT)
 import Data.Tree
 import Data.List
 import Data.Maybe
+import Data.Bifunctor
+import Data.Ord (comparing)
 
 setListElem :: [a] -> Int -> a -> [a]
 setListElem l n x = take n l ++ x : drop (n+1) l
+
+foldAcc :: ([(a, Forest a, b, acc)] -> b) -> (acc -> Int -> acc) -> acc -> Forest a -> b
+foldAcc f g acc forest = f (zipWith (\(Node x forest') ix -> let (!acc', q) = (g acc ix, foldAcc f g acc' forest') in
+                                      (x, forest', q, acc'))
+                                    forest [0..])
+
+
+-- mapAcc :: (Int -> Int) -> Forest Int -> Forest Int
+-- mapAcc f = foldAcc (map (\(a,_,b,_) -> Node (f a) b)) undefined undefined
+
+-- foldAcc :: ([(a, Forest a, b, acc)] -> b) -> (acc -> Int -> acc) -> acc -> Forest a -> b
+-- foldAcc f g acc forest = f (zipWith (\(Node x forest') ix -> let acc' = g acc ix in
+--                                       (x, forest', foldAcc f g acc' forest', acc'))
+--                                     forest [0..])
+
+-- foldWithIndex :: ([(a, b, [Int])] -> b) -> Forest a -> b
+-- foldWithIndex f = foldAcc (f . map (\(x,_,y,z) -> (x,y,z)))
+--                           (\ix n -> ix ++ [n])
+--                           []
+
+foldWithRelIndex :: ([(a, Forest a, b, [([Int], [Int])])] -> b) -> [[Int]] -> Forest a -> b
+foldWithRelIndex f ixs = foldAcc f (\l n -> map (g n) l) (map ([],) ixs)
+  where
+    g n (xs, y:ys) | n == y = (xs, ys)
+    g n (xs, ys) = (n:xs, ys)
+
+-- mapWithRelIndex :: (a -> Forest a -> b -> [([Int], [Int])] -> b) -> [[Int]] -> Forest a -> b
+-- mapWithRelIndex f = foldWithRelIndex (map (\(a,b,c,d) -> f a b c d))
+
+mapBetween :: [Int] -> [Int] -> (a -> a) -> Forest a -> Forest a
+mapBetween top bottom f = foldWithRelIndex (map g) [top, bottom]
+  where
+    g (x, _, y, [(_,[]), ([],_)]) = Node (f x) y
+    g (x, _, y, _) = Node x y
 
 validIx :: Forest a -> [Int] -> Bool
 validIx _ [] = True
@@ -48,6 +84,9 @@ modifyAt :: Forest a -> [Int] -> (Forest a -> Forest a) -> Forest a
 modifyAt forest [] f = f forest
 modifyAt forest (n:ns) f = setListElem forest n $ Node x (modifyAt forest' ns f)
   where Node x forest' = forest !! n
+
+setAt :: Forest a -> [Int] -> Forest a -> Forest a
+setAt f ix f' = modifyAt f ix (const f')
 
 -- index unchecked
 deleteNode :: [Int] -> Forest a -> [Int] -> (Forest a, [Int])
@@ -172,9 +211,9 @@ deleteFromHere GT{..}
         }
   where (tree', f) = deleteFrom viewPos tree currentPos
 
-treePlan :: Eq a => a -> GameTree a -> GameTree a
-treePlan x gt@GT{tree, viewPos} = case find (\(Node x' _, _) -> x == x')
-                                            $ zip f [0..] of
+treePlan :: (a -> a -> Bool) -> a -> GameTree a -> GameTree a
+treePlan eq x gt@GT{tree, viewPos} = case find (\(Node x' _, _) -> eq x x')
+                                               $ zip f [0..] of
     Just (_, n) -> select (viewPos ++ [n]) gt
     Nothing -> gt{tree = modifyAt tree viewPos (++ [Node x []])
                  ,viewPos = viewPos ++ [length f]
@@ -182,27 +221,75 @@ treePlan x gt@GT{tree, viewPos} = case find (\(Node x' _, _) -> x == x')
                  }
   where f = derefForest tree viewPos
 
-  -- returns whether to kill arrows
-treeMove :: Eq a => Bool -> Bool -> GameTree a -> a -> (GameTree a, Bool)
-treeMove killPlans haveInput gt@GT{tree = t, currentPos = cp, viewPos = vp} x
-      = if killPlans then kill gt' else (gt', False)
+-- returned function on indices returns True if node remains in tree, otherwise (closest remaining node, False)
+mapFromRoot :: (b -> a -> Maybe (a, Maybe b)) -> b -> Forest a -> (Forest a, [Int] -> ([Int], Bool))
+mapFromRoot f x forest = (map (fst . fst) l, mapIndex)
   where
-    nodes = derefForest t cp
-              -- if move is already in tree, replace in order to get new move time
-    (nodes', bs) = unzip $ map (\(Node x' f) -> if x == x' then (Node x f, True) else (Node x' f, False))
-                               nodes
-    (tree', currentPos') = case findIndex id bs of
-      Just n -> (modifyAt t cp (const nodes'), cp ++ [n])
-      Nothing -> (modifyAt t cp (++ [Node x []]), cp ++ [length nodes])
-    atCurrent = vp == cp && not haveInput
-    gt' = (if atCurrent then select currentPos' else id)
-             gt{tree = tree', currentPos = currentPos'}
-    kill g@GT{..} = (g{tree = t'
-                      ,currentPos = cp'
-                      ,viewPos = fromMaybe cp' $ f viewPos
-                      ,pathPos = fromMaybe cp' $ f pathPos
-                      },
-                     isNothing (f viewPos) || atCurrent
-                    )
-      where (t', f) = deleteFrom cp tree currentPos
-            cp' = fromJust $ f currentPos
+    g (Node y forest') = case f x y of
+      Nothing -> Nothing
+      Just (y', Nothing) -> Just (Node y' forest', (,True))
+      Just (y', Just x') -> Just $ first (Node y') $ mapFromRoot f x' forest'
+    l = [(t, n) | (Just t, n) <- zip (map g forest) [0..]]
+    mapIndex [] = ([], True)
+    mapIndex (n:ns) = case find ((== n) . snd . fst) (zip l [0..]) of
+      Nothing -> ([], False)
+      Just (((_,func),_),n') -> first (n':) (func ns)
+
+-- foldAcc :: ([(a, Forest a, b, acc)] -> b) -> (acc -> a -> Int -> acc) -> acc -> Forest a -> b
+
+-- mapFromRoot :: (b -> a -> Maybe (a, Maybe b)) -> b -> Forest a -> (Forest a, [Int] -> ([Int], Bool))
+-- mapFromRoot f = foldAcc () (\b a _ -> 
+
+replace :: Int -> a -> (a -> Maybe a) -> [a] -> ([a], Int -> Maybe Int)
+replace n x f xs = (xs', (`elemIndex` ixs))
+  where
+    g (x', n') = (,n') <$> if n' == n then Just x else f x'
+    (xs', ixs) = unzip $ mapMaybe g (zip xs [0..])
+
+-- killPlans in caller
+treeMove :: Ord b => (a -> a -> Maybe b)
+            -> (a -> Maybe a)
+            -> (a -> a -> Bool)
+            -> (Bool -> a -> a -> Maybe a)
+            -> Bool -> GameTree a -> a
+            -> (GameTree a, Bool)  -- returns whether to kill arrows
+treeMove match replaceFunc eq propagate moveWithCurrent GT{..} x
+    = (if atCurrent then select cp' gt' else gt', not viewPreserved || atCurrent)
+  where
+    liftedReplace (Node a b) = (\a' -> Node a' b) <$> replaceFunc a
+    nodes = derefForest tree currentPos
+    (tree', cp', mapIx) = case mapMaybe (\z@(Node x' _,_) -> (z,) <$> match x x') $ zip nodes [0..] of
+      [] -> (setAt tree currentPos (nodes' ++ [Node x []]), currentPos ++ [length nodes'], mapIx')
+        where
+          (nodes', ixs) = unzip $ mapMaybe (\(t,ix) -> (,ix) <$> liftedReplace t) (zip nodes [0..])
+          mapIx' i = case stripPrefix currentPos i of
+            Just (n:ns) -> case elemIndex n ixs of
+              Nothing -> (currentPos, False)
+              Just n' -> (currentPos++n':ns, True)
+            _ -> (i, True)
+      l -> (setAt tree currentPos nodes', currentPos ++ [ix'], mapIx')
+        where
+          ((Node replaced sub, ix), _) = minimumBy (comparing snd) l
+          (sub', f) = mapFromRoot (\(oldPrev, newPrev, top) node -> if eq oldPrev newPrev
+                                                                      then Just (node, Nothing)
+                                                                      else (\node' -> (node', Just (node, node', False)))
+                                                                             <$> propagate top newPrev node)
+                                  (replaced, x, True) sub
+          (nodes', g) = replace ix (Node x sub') liftedReplace nodes
+          Just ix' = g ix
+          mapIx' i = case stripPrefix currentPos i of
+            Just (n:ns) | n == ix -> first ((currentPos++[ix'])++) $ f ns
+                        | otherwise -> case g n of
+                          Nothing -> (currentPos, False)
+                          Just n' -> (currentPos++n':ns, True)
+            _ -> (i, True)
+    (vp', viewPreserved) = mapIx viewPos
+    gt' = GT{tree = tree'
+            ,currentPos = cp'
+            ,viewPos = vp'
+            ,pathPos = fst $ mapIx pathPos
+            }
+    atCurrent = vp' == currentPos && moveWithCurrent
+
+mapCurrentToView :: (a -> a) -> GameTree a -> GameTree a
+mapCurrentToView f gt = gt{tree = mapBetween (currentPos gt) (viewPos gt) f (tree gt)}

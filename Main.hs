@@ -54,9 +54,10 @@ import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSea
 import Base
 import GameTree
 import Scrape
-import Node
+import qualified Node
 import EventNetwork
 import Env
+import Notation
 
 #ifndef LOCAL
 import Paths_nosteps
@@ -77,17 +78,14 @@ gameroom = readTVarIO (get gameroomRef) >>= \case
       (Just u'@(_:_), Just p'@(_:_)) -> Protocol.login u' p'
       _ -> error "Can't get gameroom"
 
-----------------------------------------------------------------
-
-saveSettings :: IO ()
-saveSettings = readTVarIO (get conf) >>= Settings.saveSettings Settings.emptyDefaultConfig settingsPlace
-
 setUsernameAndPassword :: String -> String -> IO ()
 setUsernameAndPassword u p = do
   c <- readTVarIO (get conf)
   get setConf $ Settings.setSetting (Settings.setSetting c username (Just u)) password (Just p)
   atomically $ writeTVar (get gameroomRef) Nothing   -- bad: should logout
   getBotLadder
+
+----------------------------------------------------------------
 
 keyBindings :: [(Settings.Setting ([Modifier], KeyVal), String, Maybe (ButtonSet -> Button))]
 keyBindings = map (\(a,b,c,d,e) -> (Settings.Setting a (b, keyFromName (fromString c)), d, e))
@@ -543,18 +541,26 @@ viewGameCallback = do
 mapAccumLM :: Monad m => (a -> b -> m (a, c)) -> a -> [b] -> m (a, [c])
 mapAccumLM f x l = foldM (\(a,cs) g -> fmap (\(a',c) -> (a',cs++[c])) (g a)) (x,[]) (map (flip f) l)
 
-expandGame :: TimeControl -> [(GenMove, Maybe Int)] -> Either String [GameTreeNode]
-expandGame tc moves = snd <$> mapAccumLM f (newPosition, Just (initialReserve tc)) moves
+expandGame :: TimeControl -> [(GenMove, Maybe Int)] -> Either String [Node.Node]
+expandGame tc moves = snd <$> mapAccumLM f (Nothing, Just (initialReserve tc)) moves
   where
-    f :: (Position, Maybe Int) -> (GenMove, Maybe Int) -> Either String ((Position, Maybe Int), GameTreeNode)
-    f (p, r) (m, t) = fmap (\p' -> let r' = updateReserve tc <$> t <*> r in ((p', r'), GameTreeNode m p' t r'))
-                             (playGenMove p m)
+    f :: (Maybe Node.Node, Maybe Int) -> (GenMove, Maybe Int) -> Either String ((Maybe Node.Node, Maybe Int), Node.Node)
+    f (n, r) (m, t) = case Node.position n of
+      Right _ -> Left ""
+      Left p -> playGenMove p m >>= \p' ->
+        let r' = updateReserve tc <$> t <*> r
+            n' = Node.mkMove n m p' (uncurry (liftA2 (,)) (t,r'))
+          in maybe (Left "") (\n'' -> Right ((n', r'), n'')) n'
+
+    -- f :: (Position, Maybe Int) -> (GenMove, Maybe Int) -> Either String ((Position, Maybe Int), Node.Node)
+    -- f (p, r) (m, t) = fmap (\p' -> let r' = updateReserve tc <$> t <*> r in ((p', r'), Node.Node m p' t r'))
+    --                          (playGenMove p m)
 
 viewGame :: Int -> IO ()
 viewGame n = do
   background (withStatus "Fetching game" (getServerGame n)) $ \(Just sgi) -> do  -- TODO: check return value
     let nodes = either error id $ expandGame (sgiTimeControl sgi) (map (second Just) (sgiMoves sgi))
-        pos = if null nodes then newPosition else nodePosition (last nodes)
+--        pos = if null nodes then newPosition else Node.position (last nodes)
 
     newGame GameParams{names = sgiNames sgi
                       ,ratings = Just <$> sgiRatings sgi
@@ -564,7 +570,7 @@ viewGame n = do
                       }
             (foldr (\n f -> [Node n f]) [] nodes)
             (\_ -> return ()) (return Nothing)
-            (return (pure GameState{started = True, position = pos, result = Just $ sgiResult sgi},
+            (return (pure GameState{started = True, result = Just $ sgiResult sgi},
                      never))
             (return ())
 
@@ -718,6 +724,15 @@ initialStuff = do
 
 ----------------------------------------------------------------
 
+getRadioButton :: [(a, Env -> RadioButton)] -> IO a
+getRadioButton l = head . catMaybes
+                     <$> mapM (\(a,b) -> (\case False -> Nothing; True -> Just a)
+                                           <$> toggleButtonGetActive (get b))
+                              l
+
+setRadioButton :: Eq a => [(a, Env -> RadioButton)] -> a -> IO ()
+setRadioButton l x = forM_ l $ \(a,b) -> toggleButtonSetActive (get b) (a == x)
+
 settingAccessor :: (Show a, Read a)
                 => Settings.Setting a
                 -> IO a
@@ -727,24 +742,33 @@ settingAccessor s getS setS = ((\x c -> Settings.setSetting c s x) <$> getS,
                                \c -> setS (Settings.getSetting' c s)
                               )
 
+radioButtonSetting s l = settingAccessor s (getRadioButton l) (setRadioButton l)
+
 widgetsToConf :: IO (Settings.Conf -> Settings.Conf)
 confToWidgets :: Settings.Conf -> IO ()
 (widgetsToConf, confToWidgets) = (foldr (liftA2 (.)) (return id) gets,
                                   foldr (\x y c -> x c >> y c) (const (return ())) sets)
   where
-    (gets, sets) = unzip [settingAccessor username (Just <$> entryGetText (get usernameEntry))
-                                                   (entrySetText (get usernameEntry) . fromMaybe "")
-                         ,settingAccessor password (Just <$> entryGetText (get passwordEntry))
-                                                   (entrySetText (get passwordEntry) . fromMaybe "")
-                         ,settingAccessor viewMySide (fromMaybe False . fmap fst . find snd . zip [True, False]
-                                                           <$> mapM toggleButtonGetActive [get mySideButton, get goldSideButton])
-                                                     (\v -> toggleButtonSetActive (if v then get mySideButton else get goldSideButton)
-                                                                                  True)
-                         ,settingAccessor enablePlans (toggleButtonGetActive (get enablePlansButton))
-                                                      (toggleButtonSetActive (get enablePlansButton))
-                         ,settingAccessor killPlans (toggleButtonGetActive (get killPlansButton))
-                                                    (toggleButtonSetActive (get killPlansButton))
-                         ]
+    (gets, sets) = unzip
+      [settingAccessor username (Just <$> entryGetText (get usernameEntry))
+                                (entrySetText (get usernameEntry) . fromMaybe "")
+      ,settingAccessor password (Just <$> entryGetText (get passwordEntry))
+                                (entrySetText (get passwordEntry) . fromMaybe "")
+      ,settingAccessor viewMySide (fromMaybe False . fmap fst . find snd . zip [True, False]
+                                        <$> mapM toggleButtonGetActive [get mySideButton, get goldSideButton])
+                                  (\v -> toggleButtonSetActive (if v then get mySideButton else get goldSideButton)
+                                                               True)
+      ,settingAccessor killPlans (toggleButtonGetActive (get killPlansButton))
+                                 (toggleButtonSetActive (get killPlansButton))
+      ,radioButtonSetting notation [(Long, longNotationButton)
+                                   ,(Compressed, compressedNotationButton)
+                                   ,(SilverMitt, silvermittNotationButton)
+                                   ]
+      ,radioButtonSetting planSetting [(NoPlans, noPlansButton)
+                                      ,(EnablePlans, plansButton)
+                                      ,(EnablePremoves, premovesButton)
+                                      ]
+      ]
 
 settingsButtonCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
 settingsButtonCallback ls = do
@@ -831,54 +855,59 @@ main = do
   builder <- builderNew
   builderAddFromFile builder =<< dataFileName "client.glade"
 
-  window <- builderGetObject builder castToWindow "window"{-# LINE 834 "Main.vhs" #-}
-  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 835 "Main.vhs" #-}
-  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 835 "Main.vhs" #-}
-  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 835 "Main.vhs" #-}
-  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 836 "Main.vhs" #-}
-  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 836 "Main.vhs" #-}
-  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 836 "Main.vhs" #-}
-  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 837 "Main.vhs" #-}
-  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 837 "Main.vhs" #-}
-  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 837 "Main.vhs" #-}
-  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 837 "Main.vhs" #-}
-  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 837 "Main.vhs" #-}
-  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 837 "Main.vhs" #-}
-  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 838 "Main.vhs" #-}
-  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 838 "Main.vhs" #-}
-  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 838 "Main.vhs" #-}
-  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 838 "Main.vhs" #-}
-  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 838 "Main.vhs" #-}
-  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 839 "Main.vhs" #-}
-  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 839 "Main.vhs" #-}
-  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 840 "Main.vhs" #-}
-  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 840 "Main.vhs" #-}
-  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 840 "Main.vhs" #-}
-  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 840 "Main.vhs" #-}
-  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 840 "Main.vhs" #-}
-  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 840 "Main.vhs" #-}
-  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 841 "Main.vhs" #-}
-  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 842 "Main.vhs" #-}
-  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 843 "Main.vhs" #-}
-  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 844 "Main.vhs" #-}
-  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 844 "Main.vhs" #-}
-  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 845 "Main.vhs" #-}
-  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 845 "Main.vhs" #-}
-  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 846 "Main.vhs" #-}
-  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 846 "Main.vhs" #-}
-  startButton <- builderGetObject builder castToButton "start-button"{-# LINE 847 "Main.vhs" #-}
-  prevButton <- builderGetObject builder castToButton "prev-button"{-# LINE 847 "Main.vhs" #-}
-  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 847 "Main.vhs" #-}
-  nextButton <- builderGetObject builder castToButton "next-button"{-# LINE 847 "Main.vhs" #-}
-  endButton <- builderGetObject builder castToButton "end-button"{-# LINE 847 "Main.vhs" #-}
-  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 847 "Main.vhs" #-}
-  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 847 "Main.vhs" #-}
-  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 848 "Main.vhs" #-}
-  actionColumn <- builderGetObject builder castToTreeViewColumn "action-column"{-# LINE 849 "Main.vhs" #-}
-  accelColumn <- builderGetObject builder castToTreeViewColumn "accel-column"{-# LINE 849 "Main.vhs" #-}
-  keyTreeView <- builderGetObject builder castToTreeView "key-tree-view"{-# LINE 850 "Main.vhs" #-}
-  enablePlansButton <- builderGetObject builder castToCheckButton "enable-plans-button"{-# LINE 851 "Main.vhs" #-}
-  killPlansButton <- builderGetObject builder castToCheckButton "kill-plans-button"{-# LINE 851 "Main.vhs" #-}
+  window <- builderGetObject builder castToWindow "window"{-# LINE 858 "Main.vhs" #-}
+  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 859 "Main.vhs" #-}
+  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 859 "Main.vhs" #-}
+  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 859 "Main.vhs" #-}
+  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 860 "Main.vhs" #-}
+  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 860 "Main.vhs" #-}
+  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 860 "Main.vhs" #-}
+  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 861 "Main.vhs" #-}
+  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 861 "Main.vhs" #-}
+  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 861 "Main.vhs" #-}
+  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 861 "Main.vhs" #-}
+  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 861 "Main.vhs" #-}
+  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 861 "Main.vhs" #-}
+  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 862 "Main.vhs" #-}
+  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 862 "Main.vhs" #-}
+  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 862 "Main.vhs" #-}
+  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 862 "Main.vhs" #-}
+  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 862 "Main.vhs" #-}
+  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 863 "Main.vhs" #-}
+  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 863 "Main.vhs" #-}
+  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 864 "Main.vhs" #-}
+  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 864 "Main.vhs" #-}
+  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 864 "Main.vhs" #-}
+  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 864 "Main.vhs" #-}
+  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 864 "Main.vhs" #-}
+  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 864 "Main.vhs" #-}
+  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 865 "Main.vhs" #-}
+  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 866 "Main.vhs" #-}
+  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 867 "Main.vhs" #-}
+  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 868 "Main.vhs" #-}
+  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 868 "Main.vhs" #-}
+  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 869 "Main.vhs" #-}
+  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 869 "Main.vhs" #-}
+  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 870 "Main.vhs" #-}
+  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 870 "Main.vhs" #-}
+  startButton <- builderGetObject builder castToButton "start-button"{-# LINE 871 "Main.vhs" #-}
+  prevButton <- builderGetObject builder castToButton "prev-button"{-# LINE 871 "Main.vhs" #-}
+  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 871 "Main.vhs" #-}
+  nextButton <- builderGetObject builder castToButton "next-button"{-# LINE 871 "Main.vhs" #-}
+  endButton <- builderGetObject builder castToButton "end-button"{-# LINE 871 "Main.vhs" #-}
+  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 871 "Main.vhs" #-}
+  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 871 "Main.vhs" #-}
+  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 872 "Main.vhs" #-}
+  actionColumn <- builderGetObject builder castToTreeViewColumn "action-column"{-# LINE 873 "Main.vhs" #-}
+  accelColumn <- builderGetObject builder castToTreeViewColumn "accel-column"{-# LINE 873 "Main.vhs" #-}
+  keyTreeView <- builderGetObject builder castToTreeView "key-tree-view"{-# LINE 874 "Main.vhs" #-}
+  killPlansButton <- builderGetObject builder castToCheckButton "kill-plans-button"{-# LINE 875 "Main.vhs" #-}
+  longNotationButton <- builderGetObject builder castToRadioButton "long-notation-button"{-# LINE 876 "Main.vhs" #-}
+  compressedNotationButton <- builderGetObject builder castToRadioButton "compressed-notation-button"{-# LINE 876 "Main.vhs" #-}
+  silvermittNotationButton <- builderGetObject builder castToRadioButton "silvermitt-notation-button"{-# LINE 876 "Main.vhs" #-}
+  noPlansButton <- builderGetObject builder castToRadioButton "no-plans-button"{-# LINE 877 "Main.vhs" #-}
+  plansButton <- builderGetObject builder castToRadioButton "plans-button"{-# LINE 877 "Main.vhs" #-}
+  premovesButton <- builderGetObject builder castToRadioButton "premoves-button"{-# LINE 877 "Main.vhs" #-}
 
   setupIcons <- replicateM (length pieceInfo) drawingAreaNew
   setupLabels <- replicateM (length pieceInfo) $ labelNew (Nothing :: Maybe String)
@@ -1046,17 +1075,17 @@ main = do
   botLadderBotsRef <- newTVarIO (return [])
   gameroomRef <- newTVarIO Nothing
 
-  conf <- newTVarIO Map.empty
+  initialConf <- try (Settings.readSettings settingsPlace) >>= \case
+    Right (c, _) -> return c
+    Left (_ :: IOException) -> return Map.empty
+
+  conf <- newTVarIO initialConf
 
   (confAH, confFire) <- newAddHandler
   let setConf c = do
         atomically $ writeTVar conf c
         saveSettings
         confFire c
-  
-  try (Settings.readSettings settingsPlace) >>= \case
-    Right (c, _) -> atomically $ writeTVar conf c
-    Left (_ :: IOException) -> return ()
 
   let buttonSet = ButtonSet{..}
   [sendAH, resignAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH

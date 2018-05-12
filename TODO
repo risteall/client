@@ -1,16 +1,13 @@
 Missing features:
   Left click for live traps
-  Other notations
   Copy notation
   Move annotations
   Board orientation cue
   Clocks for finished games
   Double-headed arrows
-  Premoves
   Chat
 
 Infelicities:
-  Check move legality
   Check win conditions
   Better layout
   Optimise match, tree
@@ -24,7 +21,12 @@ Infelicities:
   Cycling through branches loses current position; similarly for pathPos & arrows
   What is the point of the Update type ?
   fromServer / getUpdates mess
+  Legality checking is inconsistent
+  Could have better arrowset matching at current position
+  SilverMitt notation is dodgy and slow
 
 Bugs:
   Kill threads on game end
   Key selector: exclude modifiers
+  Premove matching breaks with non-default captures
+  Tree scrolling
