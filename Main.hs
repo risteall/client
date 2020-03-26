@@ -1,6 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP #-}
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds #-}
 
 {-# LINE 6 "Main.vhs" #-}  --TODO: sub
 
@@ -28,6 +28,9 @@ import Network.HTTP hiding (Request, password)
 import Text.Regex
 --import qualified Text.Parsec as P hiding ((<|>))
 import Data.Time.Clock.POSIX
+--import System.Posix.Signals
+--import System.Posix.Process
+import System.Process
 
 import Control.Monad
 import Control.Concurrent.Async
@@ -54,9 +57,12 @@ import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSea
 import Base
 import GameTree
 import Scrape
-import Node
+import qualified Node
 import EventNetwork
 import Env
+import Sharp
+
+#define LOCAL
 
 #ifndef LOCAL
 import Paths_nosteps
@@ -93,6 +99,7 @@ keyBindings :: [(Settings.Setting ([Modifier], KeyVal), String, Maybe (ButtonSet
 keyBindings = map (\(a,b,c,d,e) -> (Settings.Setting a (b, keyFromName (fromString c)), d, e))
                   [("send-key", [], "s", "Send move", Just sendButton)
                   ,("resign-key", [], "r", "Resign", Just resignButton)
+                  ,("sharp-key", [], "x", "Run Sharp", Just sharpButton)
                   ,("plan-key", [], "space", "Enter plan move", Just planButton)
                   ,("clear-key", [], "Escape", "Clear arrows", Nothing)
                   ,("prev-key", [], "Up", "Previous move", Just prevButton)
@@ -106,6 +113,7 @@ keyBindings = map (\(a,b,c,d,e) -> (Settings.Setting a (b, keyFromName (fromStri
                   ,("delete-line-key", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", Nothing)
                   ,("delete-all-key", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", Just deleteAllButton)
                   ,("delete-from-here-key", [], "Delete", "Remove plans starting at current position", Nothing)
+                  ,("toggle-sharp-key", [], "p", "Pause and unpause Sharp", Nothing)
                   ]
 
 deriving instance Read Modifier
@@ -543,18 +551,20 @@ viewGameCallback = do
 mapAccumLM :: Monad m => (a -> b -> m (a, c)) -> a -> [b] -> m (a, [c])
 mapAccumLM f x l = foldM (\(a,cs) g -> fmap (\(a',c) -> (a',cs++[c])) (g a)) (x,[]) (map (flip f) l)
 
-expandGame :: TimeControl -> [(GenMove, Maybe Int)] -> Either String [GameTreeNode]
-expandGame tc moves = snd <$> mapAccumLM f (newPosition, Just (initialReserve tc)) moves
+expandGame :: TimeControl -> [(GenMove, Maybe Int)] -> Either String [Node.Node 'Node.Regular]
+expandGame tc moves = snd <$> mapAccumLM f (Nothing, Just (initialReserve tc)) moves
   where
-    f :: (Position, Maybe Int) -> (GenMove, Maybe Int) -> Either String ((Position, Maybe Int), GameTreeNode)
-    f (p, r) (m, t) = fmap (\p' -> let r' = updateReserve tc <$> t <*> r in ((p', r'), GameTreeNode m p' t r'))
-                             (playGenMove p m)
+    f :: (Maybe (Node.Node 'Node.Regular), Maybe Int) -> (GenMove, Maybe Int) -> Either String ((Maybe (Node.Node 'Node.Regular), Maybe Int), Node.Node 'Node.Regular)
+    f (n, r) (m, t) = (\p -> let r' = updateReserve tc <$> t <*> r
+                                 n' = Node.mkRegularNode n m p ((,) <$> t <*> r')
+                             in ((Just n', r'), n'))
+                        <$> playGenMove (Node.regularPosition n) m
 
 viewGame :: Int -> IO ()
 viewGame n = do
   background (withStatus "Fetching game" (getServerGame n)) $ \(Just sgi) -> do  -- TODO: check return value
     let nodes = either error id $ expandGame (sgiTimeControl sgi) (map (second Just) (sgiMoves sgi))
-        pos = if null nodes then newPosition else nodePosition (last nodes)
+        pos = Node.regularPosition $ if null nodes then Nothing else Just (last nodes)
 
     newGame GameParams{names = sgiNames sgi
                       ,ratings = Just <$> sgiRatings sgi
@@ -562,7 +572,7 @@ viewGame n = do
                       ,timeControl = sgiTimeControl sgi
                       ,rated = sgiRated sgi
                       }
-            (foldr (\n f -> [Node n f]) [] nodes)
+            (foldr (\n f -> [Node (Node.SomeNode n) f]) [] nodes)
             (\_ -> return ()) (return Nothing)
             (return (pure GameState{started = True, position = pos, result = Just $ sgiResult sgi},
                      never))
@@ -835,6 +845,7 @@ main = do
   sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 835 "Main.vhs" #-}
   planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 835 "Main.vhs" #-}
   resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 835 "Main.vhs" #-}
+  sharpButton <- builderGetObject builder castToButton "sharp-button"
   boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 836 "Main.vhs" #-}
   captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 836 "Main.vhs" #-}
   treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 836 "Main.vhs" #-}
@@ -1059,9 +1070,11 @@ main = do
     Left (_ :: IOException) -> return ()
 
   let buttonSet = ButtonSet{..}
-  [sendAH, resignAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH
-    ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH]
+  [sendAH, resignAH, sharpAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH
+    ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH]
        <- initKeyActions window buttonSet
+
+  sharps <- newIORef []
 
   writeIORef globalEnv Env{..}
 
@@ -1080,3 +1093,8 @@ main = do
 --  dummyGame (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
 
   mainGUI
+
+  -- fails if exit is abnormal
+  putStrLn "Killing Sharps"
+  readIORef sharps >>= mapM_ (terminateProcess . sharpPH)
+--  getProcessGroupID >>= signalProcessGroup sigTERM

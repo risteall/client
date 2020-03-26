@@ -8,15 +8,18 @@ import Control.Monad
 import Control.Applicative
 import qualified Data.Function as Function
 import Data.Bifunctor
-import Graphics.UI.Gtk hiding (Arrow)
+import Graphics.UI.Gtk hiding (get, Arrow)
 import Data.Array.IArray
 import Data.Maybe
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Reactive.Banana
+import Reactive.Banana.Frameworks
 
 import Base
-import Node
+import qualified Node
 import Match
+import Env
 
 -- does Shadow need its own module ?
 data ShadowBoard = ShadowBoard Board (Array Int Int) Int
@@ -298,14 +301,17 @@ drawTrappedPiece surface (x,y) n question
         restore
   where (u,v) = trappedPieceSquares !! n
 
-drawNonsetup (node :: Maybe GameTreeNode)
-             (arrows :: [Arrow])
-             (liveTraps :: Map Square Bool)
-             (ms :: Maybe MoveSet)
-             (visible :: Array Colour Bool)
-             (icons :: Array Piece Surface)
-             (squareMap :: Square -> Square)
-             (canvas :: DrawingArea)
+drawNonsetup
+    (depth :: Int)
+    (board :: Board)
+    (move :: Maybe Move)
+    (arrows :: [Arrow])
+    (liveTraps :: Map Square Bool)
+    (ms :: Maybe MoveSet)
+    (visible :: Array Colour Bool)
+    (icons :: Array Piece Surface)
+    (squareMap :: Square -> Square)
+    (canvas :: DrawingArea)
     = do
   x <- liftIO $ squareSize canvas
   setSourceRGB 1 1 1
@@ -317,8 +323,8 @@ drawNonsetup (node :: Maybe GameTreeNode)
   drawLiveTraps liveTraps squareMap
 
   drawPieces icons
-             (if depth node <= 2 && null arrows then listArray (Gold,Silver) (repeat True) else visible)
-             (fromMaybe (board node) (ms >>= currentMove >>= playMove (board node)))
+             (if depth <= 2 && null arrows then listArray (Gold,Silver) (repeat True) else visible)
+             (fromMaybe board (ms >>= currentMove >>= playMove board))
              squareMap
 
   let pathColour (Just (c,_)) _ True | not (visible ! c) = setSourceRGB 0 0.9 0
@@ -329,15 +335,15 @@ drawNonsetup (node :: Maybe GameTreeNode)
 
       noInput = null arrows && not (or liveTraps)
 
-  if | depth node <= 2 && noInput -> return ()
+  if | depth <= 2 && noInput -> return ()
      | noInput -> do
-         let Right m = move (fromJust node)
+         let m = maybe (Move []) id move
              (straight, bendy) =  partition (straightPath . snd) $ moveToPaths m
          drawArrowSet $ map (first (bimap squareMap squareMap))
                             $ map (\(p, path) -> (pathToArrow path, pathColour (Just p) False False))
                                   straight
          forM_ bendy $ \(p, path) -> do {pathColour (Just p) False False; drawPath $ map squareMap path}
-         
+
          forM_ (Map.assocs (moveToCaptureSet m))
                $ \(sq, pieces) -> zipWithM_ (\p i -> drawTrappedPiece (icons ! p) (squareMap sq) i Nothing) pieces [0..]
 
@@ -349,7 +355,7 @@ drawNonsetup (node :: Maybe GameTreeNode)
                                                                   (moveToPaths m)
                                                                   arrows
              straightActions = map (\(p, path) -> (pathToArrow path, pathColour (Just p) False False)) straight
-             arrActions = map (\a -> (a, pathColour ((board node) ! fst a) True True)) arrows
+             arrActions = map (\a -> (a, pathColour (board ! fst a) True True)) arrows
          drawArrowSet $ map (first (bimap squareMap squareMap)) $ arrActions ++ straightActions
          forM_ bendy $ \(p, path) -> do {pathColour (Just p) False False; drawPath $ map squareMap path}
 
@@ -366,8 +372,8 @@ drawNonsetup (node :: Maybe GameTreeNode)
            Nothing -> return ()
            Just MoveSet{currentCaptures, captures} -> sequence_ $ Map.intersectionWithKey f currentCaptures captures
 
-drawSetup :: Maybe GameTreeNode -> ShadowBoard -> Array Piece Surface -> (Square -> Square) -> DrawingArea -> Render ()
-drawSetup node sb icons squareMap canvas = do
+drawSetup :: Colour -> Board -> ShadowBoard -> Array Piece Surface -> (Square -> Square) -> DrawingArea -> Render ()
+drawSetup c board sb icons squareMap canvas = do
   x <- liftIO $ squareSize canvas
   setSourceRGB 1 1 1
   paint
@@ -376,7 +382,19 @@ drawSetup node sb icons squareMap canvas = do
 
   drawEmptyBoard
 
-  drawSetupPieces icons (toMove node) (board node) sb squareMap
+  drawSetupPieces icons c board sb squareMap
+
+drawNode :: Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> DrawingArea -> Render ())
+drawNode node
+  | Node.setupPhase (Just node)
+  = case Node.getContent node of
+      Left regular -> pure $ \sb _ _ _ _ squareMap -> drawSetup (posToMove (Node.next regular))
+                                                                (posBoard (Node.next regular))
+                                                                sb (get icons) squareMap
+      Right _ -> pure $ \_ _ _ _ _ _ _ -> return ()  -- shouldn't happen
+  | otherwise = f <$> Node.board (Just node) <*> ((>>= either (const Nothing) Just) <$> Node.getMove node)
+  where
+    f board move _ as lt ms visible squareMap = drawNonsetup (Node.depth (Just node)) board move as lt ms visible (get icons) squareMap
 
 drawSetupIcon :: Bool -> Surface -> DrawingArea -> Render ()
 drawSetupIcon b s da = do

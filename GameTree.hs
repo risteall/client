@@ -6,7 +6,7 @@ module GameTree(derefNode, leftDepth, treeDepth,
                 GameTree(tree, currentPos, viewPos), mkGameTree, pathEnd,
                 select, nextBranch, prevBranch,
                 deleteViewNode, deleteLine, deleteAll, deleteFromHere,
-                treePlan, treeMove) where
+                treePlan, treeMove, replaceView, viewNode, viewCanSharp, belowView) where
 
 import Prelude hiding (GT)
 import Data.Tree
@@ -15,6 +15,9 @@ import Data.Maybe
 
 setListElem :: [a] -> Int -> a -> [a]
 setListElem l n x = take n l ++ x : drop (n+1) l
+
+modifyListAt :: [a] -> Int -> (a -> a) -> [a]
+modifyListAt l n f = zipWith (\x i -> if i == n then f x else x) l [0..]
 
 validIx :: Forest a -> [Int] -> Bool
 validIx _ [] = True
@@ -49,17 +52,35 @@ modifyAt forest [] f = f forest
 modifyAt forest (n:ns) f = setListElem forest n $ Node x (modifyAt forest' ns f)
   where Node x forest' = forest !! n
 
+nodes :: Tree a -> [a]
+nodes (Node x f) = x : concatMap nodes f
+
+-- -- index unchecked
+-- deleteNode :: [Int] -> Forest a -> [Int] -> (Forest a, [Int])
+-- deleteNode [] f currentPos = (f, currentPos)
+-- deleteNode [n] f [] = (take n f ++ drop (n+1) f, [])
+-- deleteNode [n] f (m:ms) | n == m = (f, m:ms)
+--                         | otherwise = (take n f ++ drop (n+1) f, (if m<n then m else m-1) : ms)
+-- deleteNode (n:ns) f (m:ms)
+--   | n == m = let Node x f' = f !! n in case deleteNode ns f' ms of
+--     (f'', pos') -> (setListElem f n (Node x f''), m : pos')
+-- deleteNode (n:ns) f currentPos = let Node x f' = f !! n in case deleteNode ns f' [] of
+--   (f'', pos') -> (setListElem f n (Node x f''), currentPos)
+
 -- index unchecked
-deleteNode :: [Int] -> Forest a -> [Int] -> (Forest a, [Int])
-deleteNode [] f currentPos = (f, currentPos)
-deleteNode [n] f [] = (take n f ++ drop (n+1) f, [])
-deleteNode [n] f (m:ms) | n == m = (f, m:ms)
-                        | otherwise = (take n f ++ drop (n+1) f, (if m<n then m else m-1) : ms)
+deleteNode :: [Int] -> Forest a -> [Int] -> (Forest a, [Int], [a])
+deleteNode [] f currentPos = (f, currentPos, [])
+deleteNode [n] f [] = (take n f ++ drop (n+1) f, [], nodes (f !! n))
+deleteNode [n] f (m:ms) | n == m = (f, m:ms, [])
+                        | otherwise = (take n f ++ drop (n+1) f
+                                      ,(if m<n then m else m-1) : ms
+                                      ,nodes (f !! n)
+                                      )
 deleteNode (n:ns) f (m:ms)
   | n == m = let Node x f' = f !! n in case deleteNode ns f' ms of
-    (f'', pos') -> (setListElem f n (Node x f''), m : pos')
+      (f'', pos', ds) -> (setListElem f n (Node x f''), m : pos', ds)
 deleteNode (n:ns) f currentPos = let Node x f' = f !! n in case deleteNode ns f' [] of
-  (f'', pos') -> (setListElem f n (Node x f''), currentPos)
+  (f'', pos', ds) -> (setListElem f n (Node x f''), currentPos, ds)
 
 ----------------------------------------------------------------
 
@@ -112,50 +133,112 @@ nextBranch = selectBranch $ \l n -> case findIndex (== n) l of
 prevBranch = selectBranch $ \l n -> case findIndex (== n) l of
   Just ix -> l !! ((ix - 1) `mod` length l)
 
-deleteViewNode :: GameTree a -> GameTree a
-deleteViewNode gt@GT{currentPos, viewPos} | null viewPos || isPrefixOf viewPos currentPos = gt
-deleteViewNode GT{tree, currentPos, viewPos} = case deleteNode viewPos tree currentPos of
-  (tree', currentPos') -> GT{tree = tree'
-                            ,currentPos = currentPos'
-                            ,viewPos = init viewPos
-                            ,pathPos = init viewPos
-                            }
+-- deleteViewNode :: GameTree a -> GameTree a
+-- deleteViewNode gt@GT{currentPos, viewPos} | isPrefixOf viewPos currentPos = gt
+-- deleteViewNode GT{tree, currentPos, viewPos} = case deleteNode viewPos tree currentPos of
+--   (tree', currentPos') -> GT{tree = tree'
+--                             ,currentPos = currentPos'
+--                             ,viewPos = init viewPos
+--                             ,pathPos = init viewPos
+--                             }
 
-deleteLine :: GameTree a -> GameTree a
+deleteViewNode :: GameTree a -> (GameTree a, [a])
+deleteViewNode gt@GT{currentPos, viewPos} | isPrefixOf viewPos currentPos = (gt, [])
+deleteViewNode GT{tree, currentPos, viewPos} = case deleteNode viewPos tree currentPos of
+  (tree', currentPos', ds) -> (GT{tree = tree'
+                                 ,currentPos = currentPos'
+                                 ,viewPos = init viewPos
+                                 ,pathPos = init viewPos
+                                 }
+                              ,ds
+                              )
+
+-- deleteLine :: GameTree a -> GameTree a
+-- deleteLine gt@GT{tree, currentPos, viewPos} = case reverse (inits viewPos) of
+--   ix:_ | isPrefixOf ix currentPos -> gt
+--   ix:ixs -> let removePos = last $ ix : takeWhile (\ix' -> not (isPrefixOf ix' currentPos) && 1 == length (derefForest tree ix')) ixs in
+--     case deleteNode removePos tree currentPos of
+--       (tree', currentPos') -> GT{tree = tree'
+--                                 ,currentPos = currentPos'
+--                                 ,viewPos = init removePos
+--                                 ,pathPos = init removePos
+--                                 }
+
+deleteLine :: GameTree a -> (GameTree a, [a])
 deleteLine gt@GT{tree, currentPos, viewPos} = case reverse (inits viewPos) of
-  ix:_ | isPrefixOf ix currentPos -> gt
+  ix:_ | isPrefixOf ix currentPos -> (gt, [])
   ix:ixs -> let removePos = last $ ix : takeWhile (\ix' -> not (isPrefixOf ix' currentPos) && 1 == length (derefForest tree ix')) ixs in
     case deleteNode removePos tree currentPos of
-      (tree', currentPos') -> GT{tree = tree'
-                                ,currentPos = currentPos'
-                                ,viewPos = init removePos
-                                ,pathPos = init removePos
-                                }
+      (tree', currentPos', ds) -> (GT{tree = tree'
+                                     ,currentPos = currentPos'
+                                     ,viewPos = init removePos
+                                     ,pathPos = init removePos
+                                     }
+                                  ,ds
+                                  )
 
-deleteAll :: GameTree a -> GameTree a
-deleteAll GT{tree, currentPos, viewPos} = GT{tree = f tree currentPos
-                                            ,currentPos = map (const 0) currentPos
-                                            ,viewPos = replicate (g viewPos currentPos) 0
-                                            ,pathPos = replicate (g viewPos currentPos) 0
-                                            }
+-- deleteAll :: GameTree a -> GameTree a
+-- deleteAll GT{tree, currentPos, viewPos} = GT{tree = f tree currentPos
+--                                             ,currentPos = map (const 0) currentPos
+--                                             ,viewPos = replicate (g viewPos currentPos) 0
+--                                             ,pathPos = replicate (g viewPos currentPos) 0
+--                                             }
+--   where
+--     f [] _ = []
+--     f _ [] = []
+--     f ts (n:ns) = case ts !! n of Node x ts' -> [Node x (f ts' ns)]
+--     g (x:xs) (y:ys) | x == y = 1 + g xs ys
+--     g _ _ = 0
+
+deleteAll :: GameTree a -> (GameTree a, [a])
+deleteAll GT{tree, currentPos, viewPos} = (GT{tree = tree'
+                                             ,currentPos = map (const 0) currentPos
+                                             ,viewPos = replicate (g viewPos currentPos) 0
+                                             ,pathPos = replicate (g viewPos currentPos) 0
+                                             }
+                                          ,ds)
   where
-    f [] _ = []
-    f _ [] = []
-    f ts (n:ns) = case ts !! n of Node x ts' -> [Node x (f ts' ns)]
+    (tree', ds) = f tree currentPos
+    f [] _ = ([], [])
+    f ts [] = ([], concatMap nodes ts)
+    f ts (n:ns) = ([Node x ts''], concatMap nodes (take n ts ++ drop (n+1) ts) ++ ds)
+      where
+        Node x ts' = ts !! n
+        (ts'', ds) = f ts' ns
     g (x:xs) (y:ys) | x == y = 1 + g xs ys
     g _ _ = 0
 
+
+-- -- indices unchecked
+-- deleteFrom :: [Int] -> Forest a -> [Int] -> (Forest a, [Int] -> Maybe [Int])
+-- deleteFrom here forest currentPos = case stripPrefix here currentPos of
+--   Just (n:_) -> (forest', f)
+--     where
+--       forest' = modifyAt forest here (\f -> [f !! n])
+--       f pos = case stripPrefix here pos of
+--         Just (n':l) | n == n' -> Just (here ++ 0 : l)
+--                     | otherwise -> Nothing
+--         _ -> Just pos
+--   _ -> (forest', f)
+--     where
+--       forest' = modifyAt forest here (const [])
+--       f pos = case stripPrefix here pos of
+--         Just (_:_) -> Nothing
+--         _ -> Just pos
+
+
 -- indices unchecked
-deleteFrom :: [Int] -> Forest a -> [Int] -> (Forest a, [Int] -> Maybe [Int])
+deleteFrom :: [Int] -> Forest a -> [Int] -> (Forest a, [Int] -> Maybe [Int], [a])
 deleteFrom here forest currentPos = case stripPrefix here currentPos of
-  Just (n:_) -> (forest', f)
+  Just (n:_) -> (forest', f, concatMap nodes (take n k ++ drop (n+1) k))
     where
       forest' = modifyAt forest here (\f -> [f !! n])
+      k = derefForest forest here
       f pos = case stripPrefix here pos of
         Just (n':l) | n == n' -> Just (here ++ 0 : l)
                     | otherwise -> Nothing
         _ -> Just pos
-  _ -> (forest', f)
+  _ -> (forest', f, concatMap nodes (derefForest forest here))
     where
       forest' = modifyAt forest here (const [])
       f pos = case stripPrefix here pos of
@@ -163,14 +246,16 @@ deleteFrom here forest currentPos = case stripPrefix here currentPos of
         _ -> Just pos
 
 
-deleteFromHere :: GameTree a -> GameTree a
+deleteFromHere :: GameTree a -> (GameTree a, [a])
 deleteFromHere GT{..}
-    = GT{tree = tree'
-        ,currentPos = fromJust (f currentPos)
-        ,viewPos = viewPos
-        ,pathPos = fromMaybe viewPos $ f pathPos
-        }
-  where (tree', f) = deleteFrom viewPos tree currentPos
+    = (GT{tree = tree'
+         ,currentPos = fromJust (f currentPos)
+         ,viewPos = viewPos
+         ,pathPos = fromMaybe viewPos $ f pathPos
+         }
+      ,ds
+      )
+  where (tree', f, ds) = deleteFrom viewPos tree currentPos
 
 treePlan :: Eq a => a -> GameTree a -> GameTree a
 treePlan x gt@GT{tree, viewPos} = case find (\(Node x' _, _) -> x == x')
@@ -204,5 +289,23 @@ treeMove killPlans haveInput gt@GT{tree = t, currentPos = cp, viewPos = vp} x
                       },
                      isNothing (f viewPos) || atCurrent
                     )
-      where (t', f) = deleteFrom cp tree currentPos
+      where (t', f, _) = deleteFrom cp tree currentPos
             cp' = fromJust $ f currentPos
+
+replaceView :: a -> GameTree a -> GameTree a
+replaceView x gt@GT{tree, viewPos} = case viewPos of
+  [] -> gt
+  _ -> gt{tree = modifyAt tree a (\forest -> modifyListAt forest b (\(Node n forest') -> Node x forest'))}
+    where
+      a = init viewPos
+      b = last viewPos
+
+viewNode :: GameTree a -> Maybe a
+viewNode GT{tree, viewPos} = derefNode tree viewPos
+           
+viewCanSharp :: GameTree a -> Bool
+viewCanSharp gt = null (derefForest (tree gt) (viewPos gt))
+                  && viewPos gt /= currentPos gt
+
+belowView :: GameTree a -> [a]
+belowView gt = map (\(Node x _) -> x) $ derefForest (tree gt) (viewPos gt)

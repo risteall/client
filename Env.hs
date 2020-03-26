@@ -11,14 +11,16 @@ import Control.Concurrent.STM
 import Data.Unique
 import qualified  Data.AppSettings as Settings
 import System.IO.Unsafe
+import System.Process
 
 import qualified Protocol
 import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSeat, sit)
 import Scrape
 import Base
+import Sharp
 
 data ButtonSet = ButtonSet
-  {sendButton, planButton, resignButton
+  {sendButton, planButton, resignButton, sharpButton
   ,startButton, prevButton, currentButton, nextButton, endButton
   ,deleteNodeButton, deleteAllButton :: Button
   }
@@ -71,6 +73,7 @@ data Env = Env {icons :: Array (Colour, Int) Surface
                ,keyTreeView :: TreeView
                ,sendAH :: AddHandler ()
                ,resignAH :: AddHandler ()
+               ,sharpAH :: AddHandler ()
                ,planAH :: AddHandler ()
                ,clearArrowsAH :: AddHandler ()
                ,prevAH :: AddHandler ()
@@ -88,6 +91,8 @@ data Env = Env {icons :: Array (Colour, Int) Surface
                ,enablePlansButton, killPlansButton :: CheckButton
                ,setConf :: Settings.Conf -> IO ()
                ,confAH :: AddHandler Settings.Conf
+               ,toggleSharpAH :: AddHandler ()
+               ,sharps :: IORef [SharpProcess]
                }
 
 globalEnv :: IORef Env

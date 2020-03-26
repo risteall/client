@@ -8,6 +8,7 @@ module Base (boardWidth, boardHeight, boardRange, Square, trapSquares, stepsPerM
             ,containsCapture, charToPiece, Direction(..), stringToSquare, updateReserve, readReason, harlog
             ,GenMove, showGenMove, Position(posDepth, posBoard), newPosition, readGenMove, playGenMove, timeAvailable, posToMove
             ,posSetupPhase, charToColour, colourToServerChar, colourArray, mapColourArray, PaddedStep, destination, dirToChar
+            ,moveNum
             )
   where
 
@@ -499,3 +500,8 @@ colourArray :: [a] -> Array Colour a
 colourArray = listArray (Gold,Silver)
 
 mapColourArray f = listArray (Gold,Silver) $ map f [Gold,Silver]
+
+----------------------------------------------------------------
+
+moveNum :: Int -> String
+moveNum n = show (div (n + 2) 2) ++ if even n then "g" else "s"
