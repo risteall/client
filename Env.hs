@@ -92,7 +92,6 @@ data Env = Env {icons :: Array (Colour, Int) Surface
                ,setConf :: Settings.Conf -> IO ()
                ,confAH :: AddHandler Settings.Conf
                ,toggleSharpAH :: AddHandler ()
-               ,sharps :: IORef [SharpProcess]
                }
 
 globalEnv :: IORef Env

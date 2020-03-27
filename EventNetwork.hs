@@ -30,6 +30,7 @@ import Data.Time.Clock
 import qualified Data.AppSettings as Settings
 import Data.IORef
 import System.Process
+import Data.Functor.Identity
 
 import Env
 import Draw
@@ -390,10 +391,13 @@ treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eI
                      ]
 
   let
+    z :: Monad m => (b -> b -> b) -> (a -> m (a, b)) -> (a -> m (a, b)) -> a -> m (a, b)
+    z k f g gt = do
+      (gt', s1) <- f gt
+      (gt'', s2) <- g gt'
+      return (gt'', k s1 s2)
     y :: (b -> b -> b) -> (a -> (a, b)) -> (a -> (a, b)) -> a -> (a, b)
-    y k f g gt = case f gt of
-      (gt', s1) -> case g gt' of
-        (gt'', s2) -> (gt'', k s1 s2)
+    y k f g gt = runIdentity $ z k (Identity . f) (Identity . g) gt
 
     deletes :: Event (GameTree Node.SomeNode -> (GameTree Node.SomeNode, [Node.SomeNode]))
     deletes = foldr (unionWith (y (++))) never
@@ -403,28 +407,35 @@ treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eI
                     ,deleteFromHere <$ eDeleteFromHere
                     ]
   
-  (eTree, bTree, eDelAndToggle, ePause) <-
+  (eTree, bTree, eDel, ePauseAndToggle) <-
     let
-      k e = (fmap (second maybeToList) .) <$> e
-      z f g gt = do
-        (gt', s1) <- f gt
-        (gt'', s2) <- g gt
-        return (gt'', s1 ++ s2)
+--      fromPause, fromToggle :: Event (a -> m (a, Maybe b)) -> Event (a -> m (a, ([b], [b])))
+      fromPause e = (fmap (second ((,[]) . maybeToList)) .) <$> e
+      fromToggle e = (fmap (second (([],) . maybeToList)) .) <$> e
+      x :: Event (GameTree Node.SomeNode -> MomentIO (GameTree Node.SomeNode, ([SharpProcess], [SharpProcess])))
+      x = foldr (unionWith (z (\(a1, b1) (a2, b2) -> (a1++a2, b1++b2)))) never
+                [fromPause ePlan
+                ,fromPause (Node.addSharp (unionWith (++) (fst <$> ePauseAndToggle) eInput') (snd <$> ePauseAndToggle) eSecond <$ eSharp)
+                ,fromToggle (Node.toggleSharp <$ eToggleSharp)
+                ]
     in treeAccum initTree
-         (foldr (unionWith (y (\(as, bs) (as', bs') -> (as++as', bs++bs')))) never
-           [((, ([], [])) .) <$> pures
-           ,((\(gt, ds) -> (gt, (ds, []))) .) <$> deletes
-           ,(\(gt, x) -> (gt, ([], maybeToList x))) . Node.toggleSharp <$ eToggleSharp
+         (foldr (unionWith (y (++))) never
+           [((, []) .) <$> pures
+           ,((\(gt, ds) -> (gt, ds)) .) <$> deletes
            ])
-         (unionWith z (k ePlan) (k (Node.addSharp (unionWith (++) ePause eInput') (snd <$> eDelAndToggle) eSecond <$ eSharp)))
+         x
+         -- (foldr (unionWith (z (\(a1, b1) (a2, b2) -> (a1++a2, b1++b2)))) never
+         --   [fromPause ePlan
+         --   ,fromPause (Node.addSharp (unionWith (++) (fst <$> ePauseAndToggle) eInput') (snd <$> ePauseAndToggle) eSecond <$ eSharp)
+         --   ,fromToggle (Node.toggleSharp <$ eToggleSharp)
+         --   ])
 
   let
       f :: Node.SomeNode -> IO ()
-      f (Node.SomeNode n) = case Node.content n of
-        Node.CD _ s _ -> Node.killSharp s
-        Node.CS s -> Node.killSharp s
-        _ -> return ()
-    in reactimate $ mapM_ f <$> (fst <$> eDelAndToggle)
+      f n = case Node.getContentS n of
+        Left _ -> return ()
+        Right s -> killSharp s
+    in reactimate $ mapM_ f <$> eDel
 
   let
     eClear = foldr (unionWith const) never
@@ -880,8 +891,7 @@ newGame (params :: GameParams)
 
   writeIORef (get killGameRef) $ do
     pause network
-    readIORef (get sharps) >>= mapM_ (terminateProcess . sharpPH)
-    writeIORef (get sharps) []
+    killSharps
     cleanup
 
 ----------------------------------------------------------------

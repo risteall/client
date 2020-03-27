@@ -2,7 +2,7 @@
 
 {-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds #-}
 
-{-# LINE 6 "Main.vhs" #-}  --TODO: sub
+-- {-# LINE 6 "Main.vhs" #-}  --TODO: sub
 
 import Data.Array.IArray
 import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle)
@@ -48,6 +48,8 @@ import Text.Printf
 
 import Data.Unique
 import qualified Data.AppSettings as Settings
+
+import System.Environment
 
 import Draw
 --import Match
@@ -1074,8 +1076,6 @@ main = do
     ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH]
        <- initKeyActions window buttonSet
 
-  sharps <- newIORef []
-
   writeIORef globalEnv Env{..}
 
 ----------------------------------------------------------------
@@ -1090,11 +1090,12 @@ main = do
   widgetShowAll window
 
   -- user plays self (for testing)
---  dummyGame (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
+  args <- getArgs
+  when (not (null args)) $ dummyGame (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
 
   mainGUI
 
   -- fails if exit is abnormal
   putStrLn "Killing Sharps"
-  readIORef sharps >>= mapM_ (terminateProcess . sharpPH)
+  killSharps
 --  getProcessGroupID >>= signalProcessGroup sigTERM

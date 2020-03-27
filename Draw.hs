@@ -387,7 +387,7 @@ drawSetup c board sb icons squareMap canvas = do
 drawNode :: Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> DrawingArea -> Render ())
 drawNode node
   | Node.setupPhase (Just node)
-  = case Node.getContent node of
+  = case Node.getContentR node of
       Left regular -> pure $ \sb _ _ _ _ squareMap -> drawSetup (posToMove (Node.next regular))
                                                                 (posBoard (Node.next regular))
                                                                 sb (get icons) squareMap
