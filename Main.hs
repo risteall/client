@@ -197,8 +197,8 @@ background x y = void $ forkIO $ x >>= postGUIAsync . y
 showStatus :: IO ()
 showStatus = do
   readTVarIO (get statusStack) >>= \case
-    [] -> labelSetText (get statusLabel) ""
-    (_,m):_ -> labelSetText (get statusLabel) m
+    [] -> labelSetText (get (statusLabel . widgets)) ""
+    (_,m):_ -> labelSetText (get (statusLabel . widgets)) m
 
 setStatus :: String -> Maybe Int -> IO (IO ())
 setStatus message timeout = do
@@ -247,7 +247,7 @@ alert :: String -> IO ()
 alert s = do
   x <- newEmptyMVar
   postGUIAsync $ do
-    d <- messageDialogNew (Just (get window)) [] MessageError ButtonsOk s
+    d <- messageDialogNew (Just (get (window . widgets))) [] MessageError ButtonsOk s
     widgetShowAll d
     d `on` response $ \_ -> do
       widgetDestroy d
@@ -434,7 +434,7 @@ makeTreeStore forest l = do
 serverGameCallback :: [Protocol.GameInfo] -> IO ()
 serverGameCallback games = do
   d <- dialogNew
-  Gtk.set d [windowTransientFor := get window
+  Gtk.set d [windowTransientFor := get (window . widgets)
             ,windowDefaultWidth := 400
             ,windowDefaultHeight := 400
             ]
@@ -476,7 +476,7 @@ watchGameCallback = do
   liveGames <- readTVarIO (get liveGames)
   postalGames <- readTVarIO (get postalGames)
   d <- dialogNew
-  Gtk.set d [windowTransientFor := get window
+  Gtk.set d [windowTransientFor := get (window . widgets)
             ,windowDefaultWidth := 600
             ,windowDefaultHeight := 500
             ]
@@ -528,7 +528,7 @@ watchGameCallback = do
 makeDialog :: WidgetClass w => w -> String -> IO Bool -> IO ()
 makeDialog w buttonText f = do
   d <- dialogNew
-  Gtk.set d [windowTransientFor := get window]
+  Gtk.set d [windowTransientFor := get (window . widgets)]
   dialogAddButton d "Cancel" ResponseCancel
   widgetGrabDefault =<< dialogAddButton d buttonText ResponseOk
   u <- castToContainer <$> dialogGetContentArea d
@@ -611,7 +611,7 @@ playBot bot c = void $ forkIO $ do
 playBotCallback :: IO ()
 playBotCallback = do
   d <- dialogNew
-  Gtk.set d [windowTransientFor := get window
+  Gtk.set d [windowTransientFor := get (window . widgets)
             ,windowDefaultWidth := 300
             ,windowDefaultHeight := 500
             ]
@@ -689,7 +689,7 @@ dummyGame tc = do
 promptUsername :: IO () -> IO ()
 promptUsername finalAction = do
   d <- dialogNew
-  Gtk.set d [windowTransientFor := get window]
+  Gtk.set d [windowTransientFor := get (window . widgets)]
   widgetGrabDefault =<< dialogAddButton d "OK" ResponseOk
 
   u <- castToContainer <$> dialogGetContentArea d
@@ -744,18 +744,18 @@ confToWidgets :: Settings.Conf -> IO ()
 (widgetsToConf, confToWidgets) = (foldr (liftA2 (.)) (return id) gets,
                                   foldr (\x y c -> x c >> y c) (const (return ())) sets)
   where
-    (gets, sets) = unzip [settingAccessor username (Just <$> entryGetText (get usernameEntry))
-                                                   (entrySetText (get usernameEntry) . fromMaybe "")
-                         ,settingAccessor password (Just <$> entryGetText (get passwordEntry))
-                                                   (entrySetText (get passwordEntry) . fromMaybe "")
+    (gets, sets) = unzip [settingAccessor username (Just <$> entryGetText (get (usernameEntry . widgets)))
+                                                   (entrySetText (get (usernameEntry . widgets)) . fromMaybe "")
+                         ,settingAccessor password (Just <$> entryGetText (get (passwordEntry . widgets)))
+                                                   (entrySetText (get (passwordEntry . widgets)) . fromMaybe "")
                          ,settingAccessor viewMySide (fromMaybe False . fmap fst . find snd . zip [True, False]
-                                                           <$> mapM toggleButtonGetActive [get mySideButton, get goldSideButton])
-                                                     (\v -> toggleButtonSetActive (if v then get mySideButton else get goldSideButton)
+                                                           <$> mapM toggleButtonGetActive [get (mySideButton . widgets), get (goldSideButton . widgets)])
+                                                     (\v -> toggleButtonSetActive (if v then get (mySideButton . widgets) else get (goldSideButton . widgets))
                                                                                   True)
-                         ,settingAccessor enablePlans (toggleButtonGetActive (get enablePlansButton))
-                                                      (toggleButtonSetActive (get enablePlansButton))
-                         ,settingAccessor killPlans (toggleButtonGetActive (get killPlansButton))
-                                                    (toggleButtonSetActive (get killPlansButton))
+                         ,settingAccessor enablePlans (toggleButtonGetActive (get (enablePlansButton . widgets)))
+                                                      (toggleButtonSetActive (get (enablePlansButton . widgets)))
+                         ,settingAccessor killPlans (toggleButtonGetActive (get (killPlansButton . widgets)))
+                                                    (toggleButtonSetActive (get (killPlansButton . widgets)))
                          ]
 
 settingsButtonCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
@@ -763,30 +763,30 @@ settingsButtonCallback ls = do
   readTVarIO (get conf) >>= confToWidgets
 
     -- use of dialogRun to prevent the dialog from being destroyed on deleteEvent
-  dialogRun (get settingsDialog) >>= \_ -> settingsSetCallback ls
+  dialogRun (get (settingsDialog . widgets)) >>= \_ -> settingsSetCallback ls
 
 initKeyList :: IO (ListStore (String, ([Modifier], KeyVal)))
 initKeyList = do
   ls <- listStoreNew =<< mapM (\(setting, desc, _) -> (desc,) <$> getSetting setting) keyBindings
-  treeViewSetModel (get keyTreeView) ls
+  treeViewSetModel (get (keyTreeView . widgets)) ls
 
   crt <- cellRendererTextNew
-  cellLayoutPackStart (get actionColumn) crt False
-  cellLayoutSetAttributes (get actionColumn) crt ls $ \(a,_) -> [cellText := a]
+  cellLayoutPackStart (get (actionColumn . widgets)) crt False
+  cellLayoutSetAttributes (get (actionColumn . widgets)) crt ls $ \(a,_) -> [cellText := a]
 
   cra <- cellRendererAccelNew
   Gtk.set cra [cellRendererAccelAccelMode := CellRendererAccelModeOther]
 
-  cellLayoutPackStart (get accelColumn) cra False
-  cellLayoutSetAttributes (get accelColumn) cra ls $ \(_,(m,k)) -> [cellRendererAccelAccelKey := fromIntegral k
+  cellLayoutPackStart (get (accelColumn . widgets)) cra False
+  cellLayoutSetAttributes (get (accelColumn . widgets)) cra ls $ \(_,(m,k)) -> [cellRendererAccelAccelKey := fromIntegral k
                                                                    ,cellRendererAccelAccelMods := m
                                                                    ]
 
-  get keyTreeView `on` keyPressEvent $ do
+  get (keyTreeView . widgets) `on` keyPressEvent $ do
     k <- eventKeyVal
     m <- eventModifier
     liftIO $ do
-      treeViewGetSelection (get keyTreeView) >>= treeSelectionGetSelected >>= \case
+      treeViewGetSelection (get (keyTreeView . widgets)) >>= treeSelectionGetSelected >>= \case
         Nothing -> return ()
         Just iter -> do
           (a,b) <- listStoreGetValue ls (listStoreIterToIndex iter)
@@ -811,7 +811,7 @@ settingsSetCallback ls = do
   
   get setConf c''
   
-  widgetHide (get settingsDialog)
+  widgetHide (get (settingsDialog . widgets))
 
 ----------------------------------------------------------------
 
@@ -842,56 +842,8 @@ main = do
 
   builder <- builderNew
   builderAddFromFile builder =<< dataFileName "client.glade"
-
-  window <- builderGetObject builder castToWindow "window"{-# LINE 834 "Main.vhs" #-}
-  sendButton <- builderGetObject builder castToButton "send-button"{-# LINE 835 "Main.vhs" #-}
-  planButton <- builderGetObject builder castToButton "plan-button"{-# LINE 835 "Main.vhs" #-}
-  resignButton <- builderGetObject builder castToButton "resign-button"{-# LINE 835 "Main.vhs" #-}
-  sharpButton <- builderGetObject builder castToButton "sharp-button"
-  boardCanvas <- builderGetObject builder castToDrawingArea "board-canvas"{-# LINE 836 "Main.vhs" #-}
-  captureCanvas <- builderGetObject builder castToDrawingArea "capture-canvas"{-# LINE 836 "Main.vhs" #-}
-  treeCanvas <- builderGetObject builder castToDrawingArea "tree-canvas"{-# LINE 836 "Main.vhs" #-}
-  gameLabel <- builderGetObject builder castToLabel "game-label"{-# LINE 837 "Main.vhs" #-}
-  topPlayer <- builderGetObject builder castToLabel "top-player"{-# LINE 837 "Main.vhs" #-}
-  bottomPlayer <- builderGetObject builder castToLabel "bottom-player"{-# LINE 837 "Main.vhs" #-}
-  gameClock <- builderGetObject builder castToLabel "game-clock"{-# LINE 837 "Main.vhs" #-}
-  topClock <- builderGetObject builder castToLabel "top-clock"{-# LINE 837 "Main.vhs" #-}
-  bottomClock <- builderGetObject builder castToLabel "bottom-clock"{-# LINE 837 "Main.vhs" #-}
-  statusLabel <- builderGetObject builder castToLabel "status-label"{-# LINE 838 "Main.vhs" #-}
-  harlogLabel <- builderGetObject builder castToLabel "harlog-label"{-# LINE 838 "Main.vhs" #-}
-  moveLabel <- builderGetObject builder castToLabel "move-label"{-# LINE 838 "Main.vhs" #-}
-  topUsedClock <- builderGetObject builder castToLabel "top-used-clock"{-# LINE 838 "Main.vhs" #-}
-  bottomUsedClock <- builderGetObject builder castToLabel "bottom-used-clock"{-# LINE 838 "Main.vhs" #-}
-  setupGrid <- builderGetObject builder castToGrid "setup-grid"{-# LINE 839 "Main.vhs" #-}
-  captureGrid <- builderGetObject builder castToGrid "capture-grid"{-# LINE 839 "Main.vhs" #-}
-  myGamesItem <- builderGetObject builder castToMenuItem "my-games-item"{-# LINE 840 "Main.vhs" #-}
-  openGamesItem <- builderGetObject builder castToMenuItem "open-games-item"{-# LINE 840 "Main.vhs" #-}
-  watchGamesItem <- builderGetObject builder castToMenuItem "watch-games-item"{-# LINE 840 "Main.vhs" #-}
-  viewGameItem <- builderGetObject builder castToMenuItem "view-game-item"{-# LINE 840 "Main.vhs" #-}
-  playBotItem <- builderGetObject builder castToMenuItem "play-bot-item"{-# LINE 840 "Main.vhs" #-}
-  flipBoard <- builderGetObject builder castToMenuItem "flip-board"{-# LINE 840 "Main.vhs" #-}
-  blindModeMenu <- builderGetObject builder castToMenu "blind-mode-menu"{-# LINE 841 "Main.vhs" #-}
-  settingsItem <- builderGetObject builder castToMenuItem "settings-item"{-# LINE 842 "Main.vhs" #-}
-  settingsDialog <- builderGetObject builder castToDialog "settings-dialog"{-# LINE 843 "Main.vhs" #-}
-  treeGrid <- builderGetObject builder castToGrid "tree-grid"{-# LINE 844 "Main.vhs" #-}
-  mainGrid <- builderGetObject builder castToGrid "main-grid"{-# LINE 844 "Main.vhs" #-}
-  usernameEntry <- builderGetObject builder castToEntry "username-entry"{-# LINE 845 "Main.vhs" #-}
-  passwordEntry <- builderGetObject builder castToEntry "password-entry"{-# LINE 845 "Main.vhs" #-}
-  goldSideButton <- builderGetObject builder castToRadioButton "gold-side-button"{-# LINE 846 "Main.vhs" #-}
-  mySideButton <- builderGetObject builder castToRadioButton "my-side-button"{-# LINE 846 "Main.vhs" #-}
-  startButton <- builderGetObject builder castToButton "start-button"{-# LINE 847 "Main.vhs" #-}
-  prevButton <- builderGetObject builder castToButton "prev-button"{-# LINE 847 "Main.vhs" #-}
-  currentButton <- builderGetObject builder castToButton "current-button"{-# LINE 847 "Main.vhs" #-}
-  nextButton <- builderGetObject builder castToButton "next-button"{-# LINE 847 "Main.vhs" #-}
-  endButton <- builderGetObject builder castToButton "end-button"{-# LINE 847 "Main.vhs" #-}
-  deleteNodeButton <- builderGetObject builder castToButton "delete-node-button"{-# LINE 847 "Main.vhs" #-}
-  deleteAllButton <- builderGetObject builder castToButton "delete-all-button"{-# LINE 847 "Main.vhs" #-}
-  treeScrolledWindow <- builderGetObject builder castToScrolledWindow "tree-scrolled-window"{-# LINE 848 "Main.vhs" #-}
-  actionColumn <- builderGetObject builder castToTreeViewColumn "action-column"{-# LINE 849 "Main.vhs" #-}
-  accelColumn <- builderGetObject builder castToTreeViewColumn "accel-column"{-# LINE 849 "Main.vhs" #-}
-  keyTreeView <- builderGetObject builder castToTreeView "key-tree-view"{-# LINE 850 "Main.vhs" #-}
-  enablePlansButton <- builderGetObject builder castToCheckButton "enable-plans-button"{-# LINE 851 "Main.vhs" #-}
-  killPlansButton <- builderGetObject builder castToCheckButton "kill-plans-button"{-# LINE 851 "Main.vhs" #-}
+  buttonSet <- getButtonSet builder
+  widgets@Widgets{..} <- getWidgets builder
 
   setupIcons <- replicateM (length pieceInfo) drawingAreaNew
   setupLabels <- replicateM (length pieceInfo) $ labelNew (Nothing :: Maybe String)
@@ -1071,7 +1023,6 @@ main = do
     Right (c, _) -> atomically $ writeTVar conf c
     Left (_ :: IOException) -> return ()
 
-  let buttonSet = ButtonSet{..}
   [sendAH, resignAH, sharpAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH
     ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH]
        <- initKeyActions window buttonSet
@@ -1096,6 +1047,4 @@ main = do
   mainGUI
 
   -- fails if exit is abnormal
-  putStrLn "Killing Sharps"
   killSharps
---  getProcessGroupID >>= signalProcessGroup sigTERM

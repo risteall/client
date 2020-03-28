@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, TemplateHaskell #-}
 
 module Env where
 
@@ -18,6 +18,7 @@ import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSea
 import Scrape
 import Base
 import Sharp
+import WidgetGetter
 
 data ButtonSet = ButtonSet
   {sendButton, planButton, resignButton, sharpButton
@@ -25,14 +26,32 @@ data ButtonSet = ButtonSet
   ,deleteNodeButton, deleteAllButton :: Button
   }
 
-data Env = Env {icons :: Array (Colour, Int) Surface
-               ,moveLabel :: Label
-               ,topClock :: Label
-               ,bottomClock :: Label
-               ,setupGrid :: Grid
+mkWidgetGetter ''ButtonSet "getButtonSet"
+
+data Widgets = Widgets
+  {window :: Window
+  ,boardCanvas, captureCanvas, treeCanvas :: DrawingArea
+  ,gameLabel, topPlayer, bottomPlayer, gameClock, topClock, bottomClock, statusLabel, harlogLabel, moveLabel, topUsedClock, bottomUsedClock :: Label
+  ,setupGrid, captureGrid :: Grid
+  ,myGamesItem, openGamesItem, watchGamesItem, viewGameItem, playBotItem, flipBoard :: MenuItem
+  ,blindModeMenu :: Menu
+  ,settingsItem :: MenuItem
+  ,settingsDialog :: Dialog
+  ,treeGrid, mainGrid :: Grid
+  ,usernameEntry, passwordEntry :: Entry
+  ,goldSideButton, mySideButton :: RadioButton
+  ,treeScrolledWindow :: ScrolledWindow
+  ,actionColumn, accelColumn :: TreeViewColumn
+  ,keyTreeView :: TreeView
+  ,enablePlansButton, killPlansButton :: CheckButton
+  }
+
+mkWidgetGetter ''Widgets "getWidgets"
+
+data Env = Env {buttonSet :: ButtonSet
+               ,widgets :: Widgets
+               ,icons :: Array (Colour, Int) Surface
                ,setupLabels :: [Label]
-               ,captureGrid :: Grid
-               ,harlogLabel :: Label
                ,leftPressAH :: AddHandler (Square, (Double, Double))
                ,rightPressAH :: AddHandler Square
                ,releaseAH :: AddHandler Square
@@ -41,36 +60,21 @@ data Env = Env {icons :: Array (Colour, Int) Surface
                ,tickAH :: AddHandler ()
                ,setupIconAH :: [AddHandler ()]
                ,killGameRef :: IORef (IO ())
-               ,treeCanvas :: DrawingArea
                ,setDrawBoard :: (DrawingArea -> Render ()) -> IO ()
                ,setDrawSetupIcons :: [(DrawingArea -> Render ()) -> IO ()]
                ,setDrawCapture :: (DrawingArea -> Render ()) -> IO ()
                ,setDrawTree :: (DrawingArea -> Render ()) -> IO ()
-               ,topPlayer :: Label
-               ,bottomPlayer :: Label
-               ,window :: Window
-               ,gameLabel :: Label
-               ,gameClock :: Label
-               ,topUsedClock, bottomUsedClock :: Label
                ,blindModeAH :: AddHandler (Bool, Bool)
                ,botLadderBotsRef :: TVar (IO [BotLadderBot])
                ,statusStack :: TVar [(Unique, String)]
-               ,statusLabel :: Label
                ,myGames :: TVar [Protocol.GameInfo]
                ,openGames :: TVar [Protocol.GameInfo]
                ,liveGames :: TVar [LiveGameInfo]
                ,postalGames :: TVar [LiveGameInfo]
                ,conf :: TVar Settings.Conf
                ,gameroomRef :: TVar (Maybe Gameroom)
-               ,usernameEntry, passwordEntry :: Entry
-               ,goldSideButton, mySideButton :: RadioButton
-               ,settingsDialog :: Dialog
                ,treePressAH :: AddHandler (Double, Double)
-               ,treeScrolledWindow :: ScrolledWindow
                ,getBlindMode :: IO (Bool, Bool)
-               ,actionColumn :: TreeViewColumn
-               ,accelColumn :: TreeViewColumn
-               ,keyTreeView :: TreeView
                ,sendAH :: AddHandler ()
                ,resignAH :: AddHandler ()
                ,sharpAH :: AddHandler ()
@@ -87,8 +91,6 @@ data Env = Env {icons :: Array (Colour, Int) Surface
                ,prevBranchAH :: AddHandler ()
                ,nextBranchAH :: AddHandler ()
                ,deleteFromHereAH :: AddHandler ()
-               ,buttonSet :: ButtonSet
-               ,enablePlansButton, killPlansButton :: CheckButton
                ,setConf :: Settings.Conf -> IO ()
                ,confAH :: AddHandler Settings.Conf
                ,toggleSharpAH :: AddHandler ()

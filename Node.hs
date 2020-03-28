@@ -158,8 +158,9 @@ position (Just n@(SomeNode n')) = case getContentR n of
 board :: Maybe SomeNode -> Behavior Board
 board = fmap posBoard . position
 
-getMove :: SomeNode -> Behavior (Maybe GenMove)
-getMove n = case getContentR n of
+getMove :: Maybe SomeNode -> Behavior (Maybe GenMove)
+getMove Nothing = pure Nothing
+getMove (Just n) = case getContentR n of
   Left r -> pure (Just (move r))
   Right s -> fmap (fmap (Right . sharpMove)) (val s)
 

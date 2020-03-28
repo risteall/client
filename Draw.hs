@@ -384,17 +384,17 @@ drawSetup c board sb icons squareMap canvas = do
 
   drawSetupPieces icons c board sb squareMap
 
-drawNode :: Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> DrawingArea -> Render ())
+drawNode :: Maybe Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> DrawingArea -> Render ())
 drawNode node
-  | Node.setupPhase (Just node)
-  = case Node.getContentR node of
-      Left regular -> pure $ \sb _ _ _ _ squareMap -> drawSetup (posToMove (Node.next regular))
-                                                                (posBoard (Node.next regular))
-                                                                sb (get icons) squareMap
-      Right _ -> pure $ \_ _ _ _ _ _ _ -> return ()  -- shouldn't happen
-  | otherwise = f <$> Node.board (Just node) <*> ((>>= either (const Nothing) Just) <$> Node.getMove node)
+  | Node.setupPhase node
+  = fromMaybe (error "wazzock")
+      $ Node.useRegular' node $ \n -> pure
+        $ \sb _ _ _ _ squareMap -> drawSetup (posToMove (Node.regularPosition n))
+                                             (posBoard (Node.regularPosition n))
+                                             sb (get icons) squareMap
+  | otherwise = f <$> Node.board node <*> ((>>= either (const Nothing) Just) <$> Node.getMove node)
   where
-    f board move _ as lt ms visible squareMap = drawNonsetup (Node.depth (Just node)) board move as lt ms visible (get icons) squareMap
+    f board move _ as lt ms visible squareMap = drawNonsetup (Node.depth node) board move as lt ms visible (get icons) squareMap
 
 drawSetupIcon :: Bool -> Surface -> DrawingArea -> Render ()
 drawSetupIcon b s da = do
