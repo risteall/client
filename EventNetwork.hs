@@ -42,19 +42,6 @@ import Time
 import qualified Node
 import Sharp
 
-username :: Settings.Setting (Maybe String)
-username = Settings.Setting "username" Nothing
-
-password :: Settings.Setting (Maybe String)
-password = Settings.Setting "password" Nothing
-
-viewMySide = Settings.Setting "view-my-side" False
-enablePlans = Settings.Setting "enable-plans" True
-killPlans = Settings.Setting "kill-plans" True
-
-settingsPlace = Settings.AutoFromAppName "nosteps"
-
-----------------------------------------------------------------
 
 bConf :: MomentIO (Behavior Settings.Conf)
 bConf = do
@@ -202,10 +189,6 @@ treeXGap = 10 :: Double
 treeYGap = 20 :: Double
 treeMaxWidth = 50 :: Double
 
-currentColour, viewColour :: (Double, Double, Double)
-currentColour = (0, 0.7, 0)
-viewColour = (0.9, 0, 0)
-
 placeTree :: Forest a -> [Int] -> (Map Int [([Int], Double)], Double)
 placeTree forest currentPos = f [([], forest)] 0 (Map.empty, 0)
   where
@@ -257,8 +240,8 @@ drawTree gt offsets = top <$> setColour Nothing [] <*> f (tree gt) []
     setColour :: Maybe Node.SomeNode -> [Int] -> Behavior (Render ())
     setColour node ix = (\(r,g,b) -> setSourceRGBA r g b alpha) <$> colour
       where
-        colour | ix == currentPos gt = pure currentColour
-               | ix == viewPos gt = pure viewColour
+        colour | ix == currentPos gt = pure (getConf currentColour)
+               | ix == viewPos gt = pure (getConf viewColour)
                | otherwise = fromMaybe c <$> maybe (pure Nothing) Node.nodeColour node
         c | isPrefixOf ix (currentPos gt) = (0, 0, 0)
           | otherwise = (0, 0, 0.5)
@@ -276,17 +259,17 @@ drawMoves gt treeWidth = g <$> sequenceA (zipWith f (tail (inits (pathEnd gt))) 
       where
         Just this = derefNode (tree gt) ix
         bg1 w = do
-          let (r, g, b) | ix == viewPos gt = viewColour
-                        | ix == currentPos gt = currentColour
-                        | even n = (0.9, 0.7, 0)
-                        | otherwise = (0.6, 0.6, 0.8)
+          let (r, g, b) | ix == viewPos gt = (getConf viewColour)
+                        | ix == currentPos gt = (getConf currentColour)
+                        | even n = getConf goldColour
+                        | otherwise = getConf silverColour
           setSourceRGB r g b
           rectangle x (y n) (w - x) treeYGap
           fill
         bg2 col x' w = do
           let (r, g, b) | Just c <- col = c
-                        | even n = (1, 0.9, 0.5)  --(0.95, 0.85, 0.5)
-                        | otherwise = (0.8, 0.8, 1) --(0.8, 0.8, 0.9)
+                        | even n = getConf lightGoldColour
+                        | otherwise = getConf lightSilverColour
           setSourceRGB r g b
           rectangle x' (y n) (w - x') treeYGap
           fill

@@ -9,25 +9,6 @@ import Data.Char
 import Control.Monad
 import Data.Maybe
 
--- castFun :: Type -> ExpQ
--- castFun ty = join $ fromJust . lookup ty
---                <$> mapM (\(a, b) -> (,b) <$> a)
---                      [([t|Window|], [|castToWindow|])
---                      ,([t|Button|], [|castToButton|])
---                      ,([t|DrawingArea|], [|castToDrawingArea|])
---                      ,([t|Label|], [|castToLabel|])
---                      ,([t|Grid|], [|castToGrid|])
---                      ,([t|MenuItem|], [|castToMenuItem|])
---                      ,([t|Menu|], [|castToMenu|])
---                      ,([t|Dialog|], [|castToDialog|])
---                      ,([t|Entry|], [|castToEntry|])
---                      ,([t|RadioButton|], [|castToRadioButton|])
---                      ,([t|ScrolledWindow|], [|castToScrolledWindow|])
---                      ,([t|TreeViewColumn|], [|castToTreeViewColumn|])
---                      ,([t|TreeView|], [|castToTreeView|])
---                      ,([t|CheckButton|], [|castToCheckButton|])
---                      ]
-
 castFun :: Type -> ExpQ
 castFun (ConT n) = varE $ mkName ("castTo" ++ nameBase n)
 

@@ -19,6 +19,7 @@ import Base
 import Time
 import GameTree
 import Sharp
+import Env
 
 data RegularContent = RegularContent
   {move :: GenMove
@@ -178,9 +179,9 @@ nodeColour n = case getContentS n of
     Left _ -> pure Nothing
     Right s -> Just . g <$> status s
   where
-    g Running = (0.2, 0.9, 0.2)
-    g Paused = (0.3, 0.5, 0.8)
-    g Stopped = (0.9, 0.2, 0.5)
+    g Running = getConf runningSharpColour
+    g Paused = getConf pausedSharpColour
+    g Stopped = getConf stoppedSharpColour
 
 ----------------------------------------------------------------
 

@@ -9,7 +9,7 @@ import Graphics.Rendering.Cairo
 import Data.IORef
 import Control.Concurrent.STM
 import Data.Unique
-import qualified  Data.AppSettings as Settings
+import Data.AppSettings
 import System.IO.Unsafe
 import System.Process
 
@@ -17,7 +17,6 @@ import qualified Protocol
 import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSeat, sit)
 import Scrape
 import Base
-import Sharp
 import WidgetGetter
 
 data ButtonSet = ButtonSet
@@ -71,7 +70,7 @@ data Env = Env {buttonSet :: ButtonSet
                ,openGames :: TVar [Protocol.GameInfo]
                ,liveGames :: TVar [LiveGameInfo]
                ,postalGames :: TVar [LiveGameInfo]
-               ,conf :: TVar Settings.Conf
+               ,conf :: TVar Conf
                ,gameroomRef :: TVar (Maybe Gameroom)
                ,treePressAH :: AddHandler (Double, Double)
                ,getBlindMode :: IO (Bool, Bool)
@@ -91,8 +90,9 @@ data Env = Env {buttonSet :: ButtonSet
                ,prevBranchAH :: AddHandler ()
                ,nextBranchAH :: AddHandler ()
                ,deleteFromHereAH :: AddHandler ()
-               ,setConf :: Settings.Conf -> IO ()
-               ,confAH :: AddHandler Settings.Conf
+               ,setConf :: Conf -> IO ()
+               ,confAH :: AddHandler Conf
+               ,initialConf :: Conf
                ,toggleSharpAH :: AddHandler ()
                }
 
@@ -102,7 +102,84 @@ globalEnv = unsafePerformIO $ newIORef undefined
 get :: (Env -> a) -> a
 get f = unsafePerformIO $ f <$> readIORef globalEnv
 
-getSetting :: Read a => Settings.Setting a -> IO a
+getSetting :: Read a => Setting a -> IO a
 getSetting s = do
   c <- readTVarIO (get conf)
-  return $ Settings.getSetting' c s
+  return $ getSetting' c s
+
+getConf :: Read a => Setting a -> a
+getConf = getSetting' (get initialConf)
+
+----------------------------------------------------------------
+
+settingsPlace = AutoFromAppName "nosteps"
+
+username :: Setting (Maybe String)
+username = Setting "username" Nothing
+
+password :: Setting (Maybe String)
+password = Setting "password" Nothing
+
+viewMySide = Setting "view-my-side" False
+enablePlans = Setting "enable-plans" True
+killPlans = Setting "kill-plans" True
+
+currentColour, viewColour, goldColour, silverColour, lightGoldColour, lightSilverColour
+  ,runningSharpColour, pausedSharpColour, stoppedSharpColour, trapColour, liveTrapColour
+  ,invisibleArrowColour, goldArrowColour, silverArrowColour :: Setting (Double, Double, Double)
+
+currentColour = Setting "current-colour" (0, 0.7, 0)
+viewColour = Setting "view-colour" (0.9, 0, 0)
+goldColour = Setting "gold-colour" (0.9, 0.7, 0)
+silverColour = Setting "silver-colour" (0.6, 0.6, 0.8)
+
+-- should be determined from dark versions
+lightGoldColour = Setting "light-gold-colour" (1, 0.9, 0.5)
+lightSilverColour = Setting "light-silver-colour" (0.8, 0.8, 1)
+
+runningSharpColour = Setting "running-sharp-colour" (0.2, 0.9, 0.2)
+pausedSharpColour = Setting "paused-sharp-colour" (0.3, 0.5, 0.8)
+stoppedSharpColour = Setting "stopped-sharp-colour" (0.9, 0.2, 0.5)
+
+trapColour = Setting "trap-colour" (0.9, 0.8, 0.6)
+liveTrapColour = Setting "live-trap-colour" (1, 0, 0)
+
+invisibleArrowColour = Setting "invisible-arrow-colour" (0, 0.9, 0)
+goldArrowColour = Setting "gold-arrow-colour" (1, 0, 0)
+silverArrowColour = Setting "silver-arrow-colour" (0, 0, 1)
+
+----------------------------------------------------------------
+
+sharpThreads = Setting "sharp-threads" (1 :: Int)
+sharpTimeLimit = Setting "sharp-time-limit" (Just (180 :: Int))
+sharpDepthLimit = Setting "sharp-depth-limit" (Nothing :: Maybe Int)
+maxSharps = Setting "max-sharps" (5 :: Int)
+
+sharpExe = Setting "sharp-exe" (Nothing :: Maybe String)
+
+----------------------------------------------------------------
+
+defaultSettings = getDefaultConfig $ do
+  setting currentColour
+  setting viewColour
+  setting goldColour
+  setting silverColour
+  setting lightGoldColour
+  setting lightSilverColour
+  setting runningSharpColour
+  setting pausedSharpColour
+  setting stoppedSharpColour
+  setting trapColour
+  setting liveTrapColour
+  setting invisibleArrowColour
+  setting goldArrowColour
+  setting silverArrowColour
+
+  setting sharpThreads
+  setting sharpTimeLimit
+  setting sharpDepthLimit
+  setting maxSharps
+  setting sharpExe
+
+saveSettings :: IO ()
+saveSettings = readTVarIO (get conf) >>= Data.AppSettings.saveSettings defaultSettings settingsPlace

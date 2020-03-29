@@ -2,58 +2,39 @@
 
 {-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds #-}
 
--- {-# LINE 6 "Main.vhs" #-}  --TODO: sub
-
 import Data.Array.IArray
 import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle)
 import qualified Graphics.UI.Gtk as Gtk
 import Graphics.Rendering.Cairo
 import Data.IORef
 import Data.Maybe
---import Data.Char
 import Data.List
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
---import qualified Data.Set as Set
 import Data.List.Split
 import Control.Applicative
 import Control.Concurrent.STM
 import Control.Concurrent
 import Data.Bifunctor
-import qualified Data.Function as Function (on)
 import Data.Tree hiding (drawTree)
 import System.IO.Unsafe
 import Text.Read hiding (lift, get)
 import Network.HTTP hiding (Request, password)
 import Text.Regex
---import qualified Text.Parsec as P hiding ((<|>))
 import Data.Time.Clock.POSIX
---import System.Posix.Signals
---import System.Posix.Process
-import System.Process
-
 import Control.Monad
 import Control.Concurrent.Async
-
---import Control.DeepSeq
 import Control.Exception
-import GHC.Generics (Generic)
-
 import Reactive.Banana hiding (split)
 import qualified Reactive.Banana as RB
 import Reactive.Banana.Frameworks
-
 import GHC.Exts
 import Text.Printf
-
 import Data.Unique
-import qualified Data.AppSettings as Settings
-
+import Data.AppSettings hiding (saveSettings)
 import System.Environment
 
 import Draw
---import Match
-
 import qualified Protocol
 import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSeat, sit)
 import Base
@@ -87,18 +68,15 @@ gameroom = readTVarIO (get gameroomRef) >>= \case
 
 ----------------------------------------------------------------
 
-saveSettings :: IO ()
-saveSettings = readTVarIO (get conf) >>= Settings.saveSettings Settings.emptyDefaultConfig settingsPlace
-
 setUsernameAndPassword :: String -> String -> IO ()
 setUsernameAndPassword u p = do
   c <- readTVarIO (get conf)
-  get setConf $ Settings.setSetting (Settings.setSetting c username (Just u)) password (Just p)
+  get setConf $ setSetting (setSetting c username (Just u)) password (Just p)
   atomically $ writeTVar (get gameroomRef) Nothing   -- bad: should logout
   getBotLadder
 
-keyBindings :: [(Settings.Setting ([Modifier], KeyVal), String, Maybe (ButtonSet -> Button))]
-keyBindings = map (\(a,b,c,d,e) -> (Settings.Setting a (b, keyFromName (fromString c)), d, e))
+keyBindings :: [(Setting ([Modifier], KeyVal), String, Maybe (ButtonSet -> Button))]
+keyBindings = map (\(a,b,c,d,e) -> (Setting a (b, keyFromName (fromString c)), d, e))
                   [("send-key", [], "s", "Send move", Just sendButton)
                   ,("resign-key", [], "r", "Resign", Just resignButton)
                   ,("sharp-key", [], "x", "Run Sharp", Just sharpButton)
@@ -731,16 +709,16 @@ initialStuff = do
 ----------------------------------------------------------------
 
 settingAccessor :: (Show a, Read a)
-                => Settings.Setting a
+                => Setting a
                 -> IO a
                 -> (a -> IO ())
-                -> (IO (Settings.Conf -> Settings.Conf), Settings.Conf -> IO ())
-settingAccessor s getS setS = ((\x c -> Settings.setSetting c s x) <$> getS,
-                               \c -> setS (Settings.getSetting' c s)
+                -> (IO (Conf -> Conf), Conf -> IO ())
+settingAccessor s getS setS = ((\x c -> setSetting c s x) <$> getS,
+                               \c -> setS (getSetting' c s)
                               )
 
-widgetsToConf :: IO (Settings.Conf -> Settings.Conf)
-confToWidgets :: Settings.Conf -> IO ()
+widgetsToConf :: IO (Conf -> Conf)
+confToWidgets :: Conf -> IO ()
 (widgetsToConf, confToWidgets) = (foldr (liftA2 (.)) (return id) gets,
                                   foldr (\x y c -> x c >> y c) (const (return ())) sets)
   where
@@ -801,11 +779,11 @@ settingsSetCallback ls = do
   c' <- ($ c) <$> widgetsToConf
 
   l <- listStoreToList ls
-  let c'' = foldl' (\c ((s,_,_),(_,mk)) -> Settings.setSetting c s mk)
+  let c'' = foldl' (\c ((s,_,_),(_,mk)) -> setSetting c s mk)
                    c'
                    $ zip keyBindings l
 
-  let f c = (Settings.getSetting' c username, Settings.getSetting' c password)
+  let f c = (getSetting' c username, getSetting' c password)
       (u, p) = f c''
   when (f c /= (u, p)) $ setUsernameAndPassword (fromMaybe "" u) (fromMaybe "" p)
   
@@ -841,7 +819,7 @@ main = do
                        ]
 
   builder <- builderNew
-  builderAddFromFile builder =<< dataFileName "client.glade"
+  builderAddFromFile builder =<< dataFileName "nosteps.glade"  -- TODO: don't hardcode filename
   buttonSet <- getButtonSet builder
   widgets@Widgets{..} <- getWidgets builder
 
@@ -1011,17 +989,17 @@ main = do
   botLadderBotsRef <- newTVarIO (return [])
   gameroomRef <- newTVarIO Nothing
 
-  conf <- newTVarIO Map.empty
+  initialConf <- try (readSettings settingsPlace) >>= \case
+    Right (c, _) -> return c
+    Left (_ :: IOException) -> return Map.empty
+
+  conf <- newTVarIO initialConf
 
   (confAH, confFire) <- newAddHandler
   let setConf c = do
         atomically $ writeTVar conf c
         saveSettings
         confFire c
-  
-  try (Settings.readSettings settingsPlace) >>= \case
-    Right (c, _) -> atomically $ writeTVar conf c
-    Left (_ :: IOException) -> return ()
 
   [sendAH, resignAH, sharpAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH
     ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH]

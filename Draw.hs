@@ -217,7 +217,7 @@ withTransform x y size action = do
 
 drawEmptyBoard :: Render ()
 drawEmptyBoard = do
-  setSourceRGB 0.9 0.8 0.6
+  let (r, g, b) = getConf trapColour in setSourceRGB r g b
   forM_ trapSquares $ \(x,y) -> do
     moveTo (fromIntegral x) (fromIntegral y)
     relLineTo 0 1
@@ -238,7 +238,7 @@ drawEmptyBoard = do
 
 drawLiveTraps :: Map Square Bool -> (Square -> Square) -> Render ()
 drawLiveTraps lt squareMap = do
-  setSourceRGB 1 0 0
+  let (r, g, b) = getConf liveTrapColour in setSourceRGB r g b
   setLineWidth 0.1
   forM_ (map squareMap $ Map.keys $ Map.filter id lt) $ \(u, v) -> do
     moveTo (fromIntegral u) (fromIntegral v)
@@ -327,10 +327,10 @@ drawNonsetup
              (fromMaybe board (ms >>= currentMove >>= playMove board))
              squareMap
 
-  let pathColour (Just (c,_)) _ True | not (visible ! c) = setSourceRGB 0 0.9 0
-      pathColour Nothing _ True | not (visible ! Gold) || not (visible ! Silver) = setSourceRGB 0 0.9 0
-      pathColour (Just (Gold,_)) solid _ = setSourceRGBA 1 0 0 (if solid then 1 else 0.5)
-      pathColour (Just (Silver,_)) solid _ = setSourceRGBA 0 0 1 (if solid then 1 else 0.5)
+  let pathColour (Just (c,_)) _ True | not (visible ! c) = let (r, g, b) = getConf invisibleArrowColour in setSourceRGB r g b
+      pathColour Nothing _ True | not (visible ! Gold) || not (visible ! Silver) = let (r, g, b) = getConf invisibleArrowColour in setSourceRGB r g b
+      pathColour (Just (Gold,_)) solid _ = let (r, g, b) = getConf goldArrowColour in setSourceRGBA r g b (if solid then 1 else 0.5)
+      pathColour (Just (Silver,_)) solid _ = let (r, g, b) = getConf silverArrowColour in setSourceRGBA r g b (if solid then 1 else 0.5)
       pathColour Nothing _ _ = setSourceRGB 0 0 0
 
       noInput = null arrows && not (or liveTraps)

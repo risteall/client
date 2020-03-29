@@ -26,6 +26,7 @@ import Control.Monad
 import Graphics.UI.Gtk(postGUIAsync)
 
 import Base
+import Env
 
 data SharpVal = SharpVal
   {sharpDepth :: String
@@ -75,28 +76,19 @@ parseSharp p s
   | otherwise = Nothing
   where r = mkRegex "^ID Depth:[[:space:]]+([^[:space:]]+).*Eval:[[:space:]]+([^[:space:]]+).*PV:[[:space:]]+(.*)"
 
-timeLimit, depthLimit :: Maybe Int
-timeLimit = Just 180
-depthLimit = Nothing
-
-sharpThreads :: Int
-sharpThreads = 2
-
-sharpExe = "/home/arimaa/sharp2015"
-
 runSharp :: [GenMove] -> Position -> [Move] -> Maybe ((SharpVal -> IO ()) -> IO () -> IO ProcessHandle)
-runSharp movelist position excludes = run <$> f
+runSharp movelist position excludes = run <$> f <*> getConf sharpExe
   where
-    run (s, n) valCallback stoppedCallback = do
+    run (s, n) sharp valCallback stoppedCallback = do
       tmpDir <- getTemporaryDirectory
       (tmp, h) <- openTempFile tmpDir ".movelist"
       hPutStr h s
       hClose h
       (_, Just hout, _, ph) <-
-        createProcess (proc sharpExe (["analyze", tmp, n, "-threads", show sharpThreads]
-                                      ++ if null excludes
-                                           then []
-                                           else ["-exclude", intercalate ", " (map show excludes)]))
+        createProcess (proc sharp (["analyze", tmp, n, "-threads", show (getConf sharpThreads)]
+                                   ++ if null excludes
+                                        then []
+                                        else ["-exclude", intercalate ", " (map show excludes)]))
           {std_out = CreatePipe}
       forkIO $ do
         s <- hGetContents hout
@@ -152,12 +144,10 @@ killSharp SharpProcess{ph} = do
   terminateProcess ph
   signalPH ph sigCONT
 
-maxSharps = 5 :: Int
-
 registerSharp :: SharpProcess -> IO ()
 registerSharp sp = do
   sharps' <- atomicModifyIORef' sharps (\ss -> (sp : ss, ss))
-  when (length sharps' >= maxSharps) $ do
+  when (length sharps' >= (getConf maxSharps)) $ do
     (s:_) <- map fst . sortOn snd <$> mapM (\s -> (s,) <$> readIORef (used s)) sharps'
     killSharp s
 
@@ -183,8 +173,8 @@ mkSharpProcess movelist position excludes = f <$> runSharp movelist position exc
           eNoGo = foldr (unionWith const) never
                         [ePause
                         ,whenE ((== Running) <$> status) eToggle
-                        ,whenE ((== timeLimit) . Just <$> bTimer) eSecond'
-                        ,() <$ filterE ((== (maybe "" show depthLimit)) . sharpDepth) eVal
+                        ,whenE ((== (getConf sharpTimeLimit)) . Just <$> bTimer) eSecond'
+                        ,() <$ filterE ((== (maybe "" show (getConf sharpDepthLimit))) . sharpDepth) eVal
                         ]
 
       used <- liftIO $ getCurrentTime >>= newIORef
