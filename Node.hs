@@ -242,4 +242,8 @@ toggleSharp gt = case viewNode gt of
               )
         (nr, ns) = detachDormantNode n
         goUp gt' = select (init (viewPos gt')) gt'
-    
+
+killNode :: SomeNode -> IO ()
+killNode n = case Node.getContentS n of
+  Left _ -> return ()
+  Right s -> killSharp s

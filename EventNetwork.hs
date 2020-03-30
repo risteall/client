@@ -387,7 +387,7 @@ treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eI
                      ,prevBranch <$ ePrevBranch
                      ,nextBranch <$ eNextBranch
                      ,select <$> eSelect
-                     ,const . fst <$> eTreeMove
+                     ,const . (\(a,_,_) -> a) <$> eTreeMove
 --                     ,treePlan <$> ePlan
                      ]
 
@@ -417,12 +417,7 @@ treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eI
            ,fromToggle (Node.toggleSharp <$ eToggleSharp)
            ])
 
-  let
-      f :: Node.SomeNode -> IO ()
-      f n = case Node.getContentS n of
-        Left _ -> return ()
-        Right s -> killSharp s
-    in reactimate $ mapM_ f <$> eDel
+  reactimate $ mapM_ Node.killNode <$> unionWith (++) eDel ((\(_,_,a) -> a) <$> eTreeMove)
 
   let
     sTreePlaces = (\gt -> (gt, placeTree (tree gt) (currentPos gt))) <$> sTree   -- combined because used together in drawTree
@@ -431,7 +426,7 @@ treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eI
                    [eStart, eEnd, eCurrent, ePrevNode, eNextNode, ePrevBranch, eNextBranch, eDeleteNode, eDeleteLine
                    ,void eSelect, void ePlan
                    ,void eSharp  -- should be filtered somewhat
-                   ,void $ filterE snd eTreeMove
+                   ,void $ filterE (\(_,a,_) -> a) eTreeMove
                    ,void $ whenE ((\gt -> not (viewPos gt `isPrefixOf` currentPos gt)) <$> behavior sTree) eDeleteAll
                    ]
 
@@ -753,7 +748,7 @@ gameNetwork (params :: GameParams)
                    initialGamePos
                    eMove
                    ePlanFunc
-                   eSharp
+                   (whenE ((\gs -> not (or (isUser params)) || isJust (result gs)) <$> gameState) eSharp)
                    (flip Settings.getSetting' killPlans <$> bConf')
                    haveInput
                    eInput

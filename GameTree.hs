@@ -268,9 +268,9 @@ treePlan x gt@GT{tree, viewPos} = case find (\(Node x' _, _) -> x == x')
   where f = derefForest tree viewPos
 
   -- returns whether to kill arrows
-treeMove :: Eq a => Bool -> Bool -> GameTree a -> a -> (GameTree a, Bool)
+treeMove :: Eq a => Bool -> Bool -> GameTree a -> a -> (GameTree a, Bool, [a])
 treeMove killPlans haveInput gt@GT{tree = t, currentPos = cp, viewPos = vp} x
-      = if killPlans then kill gt' else (gt', False)
+      = if killPlans then kill gt' else (gt', False, [])
   where
     nodes = derefForest t cp
               -- if move is already in tree, replace in order to get new move time
@@ -286,10 +286,11 @@ treeMove killPlans haveInput gt@GT{tree = t, currentPos = cp, viewPos = vp} x
                       ,currentPos = cp'
                       ,viewPos = fromMaybe cp' $ f viewPos
                       ,pathPos = fromMaybe cp' $ f pathPos
-                      },
-                     isNothing (f viewPos) || atCurrent
+                      }
+                    ,isNothing (f viewPos) || atCurrent
+                    ,ds
                     )
-      where (t', f, _) = deleteFrom cp tree currentPos
+      where (t', f, ds) = deleteFrom cp tree currentPos
             cp' = fromJust $ f currentPos
 
 replaceView :: a -> GameTree a -> GameTree a
