@@ -31,7 +31,7 @@ import Reactive.Banana.Frameworks
 import GHC.Exts
 import Text.Printf
 import Data.Unique
-import Data.AppSettings hiding (saveSettings)
+import Data.AppSettings
 import System.Environment
 import Control.Lens (_2)
 
@@ -79,25 +79,27 @@ setUsernameAndPassword u p = do
   atomically $ writeTVar (get gameroomRef) Nothing   -- bad: should logout
   getBotLadder
 
+-- multiple keys for same action should be possible
 keyBindings :: [(Setting ([Modifier], KeyVal), String, Maybe (ButtonSet -> Button))]
 keyBindings = map (\(a,b,c,d,e) -> (Setting a (b, keyFromName (fromString c)), d, e))
                   [("send-key", [], "s", "Send move", Just sendButton)
                   ,("resign-key", [], "r", "Resign", Just resignButton)
-                  ,("sharp-key", [], "x", "Run Sharp", Just sharpButton)
-                  ,("plan-key", [], "space", "Enter plan move", Just planButton)
+                  ,("sharp-key", [], "x", "Run Sharp", Nothing)
+                  ,("plan-key", [], "space", "Enter plan move", Nothing)
                   ,("clear-key", [], "Escape", "Clear arrows", Nothing)
-                  ,("prev-key", [], "Up", "Previous move", Just prevButton)
-                  ,("next-key", [], "Down", "Next move", Just nextButton)
-                  ,("start-key", [Gtk.Control], "Up", "Go to game start", Just startButton)
-                  ,("end-key", [Gtk.Control], "Down", "Go to game end", Just endButton)
-                  ,("current-key", [], "c", "Go to current game position", Just currentButton)
+                  ,("prev-key", [], "Up", "Previous move", Nothing)
+                  ,("next-key", [], "Down", "Next move", Nothing)
+                  ,("start-key", [Gtk.Control], "Up", "Go to game start", Nothing)
+                  ,("end-key", [Gtk.Control], "Down", "Go to game end", Nothing)
+                  ,("current-key", [], "c", "Go to current game position", Nothing)
                   ,("prev-branch-key", [], "Left", "Previous variation", Nothing)
                   ,("next-branch-key", [], "Right", "Next variation", Nothing)
-                  ,("delete-node-key", [], "BackSpace", "Remove plan move", Just deleteNodeButton)
+                  ,("delete-node-key", [], "BackSpace", "Remove plan move", Nothing)
                   ,("delete-line-key", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", Nothing)
-                  ,("delete-all-key", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", Just deleteAllButton)
+                  ,("delete-all-key", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", Nothing)
                   ,("delete-from-here-key", [], "Delete", "Remove plans starting at current position", Nothing)
                   ,("toggle-sharp-key", [], "p", "Pause and unpause Sharp", Nothing)
+                  ,("toggle-fullscreen", [], "F11", "Toggle fullscreen", Nothing)
                   ]
 
 deriving instance Read Modifier
@@ -758,19 +760,15 @@ dataFileName = getDataFileName
 #endif
 
 main = do
-  initialConf <- try (readSettings settingsPlace) >>= \case
+  conf <- (newTVarIO =<<) $ try (readSettings settingsPlace) >>= \case
     Right (c, _) -> return c
     Left (_ :: IOException) -> return Map.empty
-
-  conf <- newTVarIO initialConf
 
   (confAH, confFire) <- newAddHandler
   let setConf c = do
         atomically $ writeTVar conf c
-        saveSettings
         confFire c
-
-  initGUI
+        saveSettings emptyDefaultConfig settingsPlace c
 
   let imageFiles =
         [(TwoD, ["2D/" ++ (t : c : ".png") | c <- "gs", t <- "rcdhme"])
@@ -794,7 +792,9 @@ main = do
     <$> mapM (_2 (fmap (listArray ((Gold, 0), (Silver, length pieceInfo - 1)))
                     . mapM ((>>= imageSurfaceCreateFromPNG) . dataFileName . ("images/" ++))))
              imageFiles
-    
+
+  initGUI
+
   builder <- builderNew
   builderAddFromFile builder =<< dataFileName "nosteps.glade"  -- TODO: don't hardcode filename
   buttonSet <- getButtonSet builder
@@ -866,6 +866,7 @@ main = do
   widgetAddEvents window [KeyPressMask]
   widgetAddEvents treeCanvas [ButtonPressMask]
 
+  -- command line
   let layoutHack = True
 
   when layoutHack $ do
@@ -915,7 +916,7 @@ main = do
     translate borderWidth borderWidth
     scale x x
 
-    drawEmptyBoard initialConf
+    liftIO (readTVarIO conf) >>= drawEmptyBoard
 
   (leftPressAH, leftPressFire) <- newAddHandler
   (rightPressAH, rightPressFire) <- newAddHandler
@@ -1003,14 +1004,30 @@ main = do
   gameroomRef <- newTVarIO Nothing
 
   [sendAH, resignAH, sharpAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH
-    ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH]
+    ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH, toggleFullscreenAH]
        <- initKeyActions window buttonSet
+
+  do
+    fullscreen <- newIORef False
+    window `on` windowStateEvent $ do
+      state <- eventWindowState
+      liftIO $ writeIORef fullscreen (elem WindowStateFullscreen state)
+      return True
+  
+    register toggleFullscreenAH $ const $ readIORef fullscreen >>= \case
+      False -> do
+--        widgetHide menuBar
+        windowFullscreen window
+      True -> do
+--        widgetShow menuBar
+        windowUnfullscreen window
 
   trapMask <- mkTrapMask 1.6 3.2 1.5
 
   writeIORef globalEnv Env{..}
 
 ----------------------------------------------------------------
+
 
   do
     b <- dialogAddButton settingsDialog "Apply" ResponseAccept
@@ -1021,7 +1038,7 @@ main = do
 
     settingsItem `on` menuItemActivated $ do
       readTVarIO conf >>= confToWidgets
-      widgetShow settingsDialog
+      windowPresent settingsDialog
 
     settingsDialog `on` deleteEvent $ do
       liftIO $ widgetHide settingsDialog
@@ -1037,6 +1054,9 @@ main = do
   -- this is on realize so that the prompt-username window is centred over the main window
   window `on` realize $ initialStuff
 
+  windowSetIconFromFile window "images/2D/cs.png"
+  windowMaximize window
+  -- windowFullscreen window
   widgetShowAll window
 
   -- user plays self (for testing)

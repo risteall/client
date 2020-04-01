@@ -24,9 +24,7 @@ import Templates
 import Misc
 
 data ButtonSet = ButtonSet
-  {sendButton, planButton, resignButton, sharpButton
-  ,startButton, prevButton, currentButton, nextButton, endButton
-  ,deleteNodeButton, deleteAllButton :: Button
+  {sendButton, resignButton :: Button
   }
 
 mkWidgetGetter ''ButtonSet "getButtonSet"
@@ -45,6 +43,7 @@ data Widgets = Widgets
   ,actionColumn, accelColumn :: TreeViewColumn
   ,keyTreeView :: TreeView
   ,dialogActionArea :: ButtonBox
+  ,menuBar :: MenuBar
   }
 
 mkWidgetGetter ''Widgets "getWidgets"
@@ -114,9 +113,3 @@ getConf' s = do
 
 getConf :: Read a => Setting a -> a
 getConf = unsafePerformIO . getConf'
-
-settingsPlace = AutoFromAppName "nosteps"
-
--- disambig necessary
-saveSettings :: IO ()
-saveSettings = readTVarIO (get conf) >>= Data.AppSettings.saveSettings emptyDefaultConfig settingsPlace

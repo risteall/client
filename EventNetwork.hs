@@ -739,13 +739,13 @@ gameNetwork (params :: GameParams)
   viewPosition <- switchStepper $ Node.position . viewNode <$> sTree
 
 ----------------------------------------------------------------
-  
-  ePlanFunc <- buttonAction (get (planButton . buttonSet))
-                            ePlan
-                            $ (\c x v -> if getSetting' c enablePlans
+
+
+  let ePlanFunc = filterJust (b <@ ePlan)
+        where b = (\c x v -> if getSetting' c enablePlans
                                   then (\(m,p) -> Node.addFromRegular (\r -> Just (return (Node.SomeNode (Node.mkRegularNode r m p Nothing))))) <$> snd x
                                   else Nothing)
-                                <$> bConf' <*> nextMove <*> view
+                    <$> bConf' <*> nextMove <*> view
 
   bTicks <- accumB 0 ((+ 1) <$ eTick)
   let eSecond = whenE ((== 0) . (`mod` tickFrequency) <$> bTicks) eTick

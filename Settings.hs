@@ -17,6 +17,8 @@ import Templates
 import Misc
 import WidgetValue
 
+settingsPlace = AutoFromAppName "nosteps"
+
 type Accessor = (IO (Conf -> Conf), Conf -> IO ())
 
 instance {-# OVERLAPS #-} Semigroup Accessor where
