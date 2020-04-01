@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase, TemplateHaskell, TupleSections #-}
 
-module WidgetGetter where
+module Templates where
 
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
@@ -8,6 +8,7 @@ import Graphics.UI.Gtk
 import Data.Char
 import Control.Monad
 import Data.Maybe
+import Data.AppSettings
 
 castFun :: Type -> ExpQ
 castFun (ConT n) = varE $ mkName ("castTo" ++ nameBase n)
@@ -42,3 +43,19 @@ mkWidgetGetter name fNameS = reify name >>= \case
                       []]
     return [sig, f]
   _ -> error "foo"
+
+----------------------------------------------------------------
+
+declareSettings :: String -> [(String, TypeQ, ExpQ, ExpQ)] -> Q [Dec]
+declareSettings x l = do
+    (decs, es) <- unzip <$> mapM f l
+    let n = mkName x
+    xDec <- funD n [clause [] (normalB (listE es)) []]
+    return (join decs ++ [xDec])
+  where
+    f :: (String, TypeQ, ExpQ, ExpQ) -> Q ([Dec], ExpQ)
+    f (s, t, def, fun) = do
+      let n = mkName s
+      sig <- sigD n ([t|Setting|] `appT` t)
+      dec <- funD n [clause [] (normalB ([|Setting|] `appE` stringE (uncamel s) `appE` def)) []]
+      return ([sig, dec], fun `appE` varE n)

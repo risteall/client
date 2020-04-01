@@ -33,6 +33,7 @@ import Text.Printf
 import Data.Unique
 import Data.AppSettings hiding (saveSettings)
 import System.Environment
+import Control.Lens (_2)
 
 import Draw
 import qualified Protocol
@@ -44,6 +45,9 @@ import qualified Node
 import EventNetwork
 import Env
 import Sharp
+import WidgetValue
+import Settings
+import Misc
 
 #define LOCAL
 
@@ -60,8 +64,8 @@ gameroom :: IO Gameroom
 gameroom = readTVarIO (get gameroomRef) >>= \case
   Just g -> return g
   Nothing -> do
-    u <- getSetting username
-    p <- getSetting password
+    u <- getConf' username
+    p <- getConf' password
     case (u, p) of
       (Just u'@(_:_), Just p'@(_:_)) -> Protocol.login u' p'
       _ -> error "Can't get gameroom"
@@ -112,7 +116,7 @@ initKeyActions w bs = do
     k <- eventKeyVal
     m <- eventModifier
     let f (_, fire) (s, _, _) = do
-          (m', k') <- getSetting s
+          (m', k') <- getConf' s
           if k == k' && elem m (permutations m')
             then do {fire (); return True}
             else return False
@@ -131,12 +135,6 @@ entryAccessor label = do
   containerAdd box e
 
   return (box, entryGetText e, entrySetText e)
-
--- class WidgetClass b => WidgetValue a b | a -> b where
---   defaultValue :: a
---   makeWidget :: a -> IO b
---   setValue :: b -> a -> IO ()
---   getValue :: b -> IO (Maybe a)
 
 -- dialogValue :: WidgetValue a b => String -> (a -> IO c) -> IO c
 -- dialogValue label f = do
@@ -528,9 +526,6 @@ viewGameCallback = do
       return True
     _ -> return False
 
-mapAccumLM :: Monad m => (a -> b -> m (a, c)) -> a -> [b] -> m (a, [c])
-mapAccumLM f x l = foldM (\(a,cs) g -> fmap (\(a',c) -> (a',cs++[c])) (g a)) (x,[]) (map (flip f) l)
-
 expandGame :: TimeControl -> [(GenMove, Maybe Int)] -> Either String [Node.Node 'Node.Regular]
 expandGame tc moves = snd <$> mapAccumLM f (Nothing, Just (initialReserve tc)) moves
   where
@@ -562,7 +557,7 @@ viewGame n = do
 
 getBotLadder :: IO ()
 getBotLadder = do
-  u <- fromMaybe "" <$> getSetting username
+  u <- fromMaybe "" <$> getConf' username
   a <- async (botLadderAll (if null u then Nothing else Just u))
   atomically $ writeTVar (get botLadderBotsRef) $ wait a
 
@@ -700,52 +695,17 @@ initialStuff = do
   let x = do
         getBotLadder
         void $ forkIO updateServerGames
-  u <- getSetting username
-  p <- getSetting password
+  u <- getConf' username
+  p <- getConf' password
   case (u, p) of
     (Just _, Just _) -> x
     _ -> promptUsername x
 
 ----------------------------------------------------------------
 
-settingAccessor :: (Show a, Read a)
-                => Setting a
-                -> IO a
-                -> (a -> IO ())
-                -> (IO (Conf -> Conf), Conf -> IO ())
-settingAccessor s getS setS = ((\x c -> setSetting c s x) <$> getS,
-                               \c -> setS (getSetting' c s)
-                              )
-
-widgetsToConf :: IO (Conf -> Conf)
-confToWidgets :: Conf -> IO ()
-(widgetsToConf, confToWidgets) = (foldr (liftA2 (.)) (return id) gets,
-                                  foldr (\x y c -> x c >> y c) (const (return ())) sets)
-  where
-    (gets, sets) = unzip [settingAccessor username (Just <$> entryGetText (get (usernameEntry . widgets)))
-                                                   (entrySetText (get (usernameEntry . widgets)) . fromMaybe "")
-                         ,settingAccessor password (Just <$> entryGetText (get (passwordEntry . widgets)))
-                                                   (entrySetText (get (passwordEntry . widgets)) . fromMaybe "")
-                         ,settingAccessor viewMySide (fromMaybe False . fmap fst . find snd . zip [True, False]
-                                                           <$> mapM toggleButtonGetActive [get (mySideButton . widgets), get (goldSideButton . widgets)])
-                                                     (\v -> toggleButtonSetActive (if v then get (mySideButton . widgets) else get (goldSideButton . widgets))
-                                                                                  True)
-                         ,settingAccessor enablePlans (toggleButtonGetActive (get (enablePlansButton . widgets)))
-                                                      (toggleButtonSetActive (get (enablePlansButton . widgets)))
-                         ,settingAccessor killPlans (toggleButtonGetActive (get (killPlansButton . widgets)))
-                                                    (toggleButtonSetActive (get (killPlansButton . widgets)))
-                         ]
-
-settingsButtonCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
-settingsButtonCallback ls = do
-  readTVarIO (get conf) >>= confToWidgets
-
-    -- use of dialogRun to prevent the dialog from being destroyed on deleteEvent
-  dialogRun (get (settingsDialog . widgets)) >>= \_ -> settingsSetCallback ls
-
 initKeyList :: IO (ListStore (String, ([Modifier], KeyVal)))
 initKeyList = do
-  ls <- listStoreNew =<< mapM (\(setting, desc, _) -> (desc,) <$> getSetting setting) keyBindings
+  ls <- listStoreNew =<< mapM (\(setting, desc, _) -> (desc,) <$> getConf' setting) keyBindings
   treeViewSetModel (get (keyTreeView . widgets)) ls
 
   crt <- cellRendererTextNew
@@ -776,7 +736,7 @@ initKeyList = do
 settingsSetCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
 settingsSetCallback ls = do
   c <- readTVarIO (get conf)
-  c' <- ($ c) <$> widgetsToConf
+  c' <- ($ c) <$> get widgetsToConf
 
   l <- listStoreToList ls
   let c'' = foldl' (\c ((s,_,_),(_,mk)) -> setSetting c s mk)
@@ -788,8 +748,6 @@ settingsSetCallback ls = do
   when (f c /= (u, p)) $ setUsernameAndPassword (fromMaybe "" u) (fromMaybe "" p)
   
   get setConf c''
-  
-  widgetHide (get (settingsDialog . widgets))
 
 ----------------------------------------------------------------
 
@@ -800,24 +758,43 @@ dataFileName = getDataFileName
 #endif
 
 main = do
+  initialConf <- try (readSettings settingsPlace) >>= \case
+    Right (c, _) -> return c
+    Left (_ :: IOException) -> return Map.empty
+
+  conf <- newTVarIO initialConf
+
+  (confAH, confFire) <- newAddHandler
+  let setConf c = do
+        atomically $ writeTVar conf c
+        saveSettings
+        confFire c
+
   initGUI
 
-  icons <- fmap (listArray ((Gold, 0), (Silver, length pieceInfo - 1)))
-                $ mapM ((>>= imageSurfaceCreateFromPNG) . dataFileName . ("images/" ++))
-                       ["GoldRabbit.png"
-                       ,"GoldCat.png"
-                       ,"GoldDog.png"
-                       ,"GoldHorse.png"
-                       ,"GoldCamel.png"
-                       ,"GoldElephant.png"
-                       ,"SilverRabbit.png"
-                       ,"SilverCat.png"
-                       ,"SilverDog.png"
-                       ,"SilverHorse.png"
-                       ,"SilverCamel.png"
-                       ,"SilverElephant.png"
-                       ]
+  let imageFiles =
+        [(TwoD, ["2D/" ++ (t : c : ".png") | c <- "gs", t <- "rcdhme"])
+        ,(ThreeD, map ("3D/" ++)
+                      ["GoldRabbit.png"
+                      ,"GoldCat.png"
+                      ,"GoldDog.png"
+                      ,"GoldHorse.png"
+                      ,"GoldCamel.png"
+                      ,"GoldElephant.png"
+                      ,"SilverRabbit.png"
+                      ,"SilverCat.png"
+                      ,"SilverDog.png"
+                      ,"SilverHorse.png"
+                      ,"SilverCamel.png"
+                      ,"SilverElephant.png"
+                      ])
+        ]
 
+  icons <- Map.fromList
+    <$> mapM (_2 (fmap (listArray ((Gold, 0), (Silver, length pieceInfo - 1)))
+                    . mapM ((>>= imageSurfaceCreateFromPNG) . dataFileName . ("images/" ++))))
+             imageFiles
+    
   builder <- builderNew
   builderAddFromFile builder =<< dataFileName "nosteps.glade"  -- TODO: don't hardcode filename
   buttonSet <- getButtonSet builder
@@ -831,6 +808,42 @@ main = do
 
   zipWithM_ (\i n -> gridAttach setupGrid i n 0 1 1) setupIcons [0..]
   zipWithM_ (\l n -> gridAttach setupGrid l n 1 1 1) setupLabels [0..]
+
+----------------------------------------------------------------
+
+  generalAccessor <- do
+    Gtk.set settingsGrid [containerBorderWidth := 5]
+    gridSetColumnSpacing settingsGrid 10
+    gridSetRowSpacing settingsGrid 5
+
+    (y, acc1) <- foldConfWidgets settingsGrid 0 0 generalSettings
+    sep <- hSeparatorNew
+    gridAttach settingsGrid sep 0 y 2 1
+    (_, acc2) <- foldConfWidgets settingsGrid 0 (y+1) sharpSettings
+
+    widgetShowAll settingsGrid
+    return (acc1 <> acc2)
+
+  colourAccessor <- do
+    Gtk.set colourGrid [containerBorderWidth := 5]
+    gridSetColumnSpacing colourGrid 10
+    gridSetRowSpacing colourGrid 5
+
+    (y, acc) <- foldConfWidgets colourGrid 0 0 colourSettings
+
+    defaultButton <- buttonNewWithLabel "Defaults"
+    gridAttach colourGrid defaultButton 0 y 1 1
+
+    defaultButton `on` buttonActivated $ do
+      atomically $ modifyTVar' conf (Map.union defaultColours)
+      readTVarIO conf >>= snd acc
+
+    widgetShowAll colourGrid
+    return acc
+
+  let (widgetsToConf, confToWidgets) = generalAccessor <> colourAccessor
+
+----------------------------------------------------------------
 
   (getBlindMode, blindModeAH) <- do
     first <- radioMenuItemNewWithLabel "Sighted"
@@ -902,7 +915,7 @@ main = do
     translate borderWidth borderWidth
     scale x x
 
-    drawEmptyBoard
+    drawEmptyBoard initialConf
 
   (leftPressAH, leftPressFire) <- newAddHandler
   (rightPressAH, rightPressFire) <- newAddHandler
@@ -989,29 +1002,37 @@ main = do
   botLadderBotsRef <- newTVarIO (return [])
   gameroomRef <- newTVarIO Nothing
 
-  initialConf <- try (readSettings settingsPlace) >>= \case
-    Right (c, _) -> return c
-    Left (_ :: IOException) -> return Map.empty
-
-  conf <- newTVarIO initialConf
-
-  (confAH, confFire) <- newAddHandler
-  let setConf c = do
-        atomically $ writeTVar conf c
-        saveSettings
-        confFire c
-
   [sendAH, resignAH, sharpAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH
     ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH]
        <- initKeyActions window buttonSet
+
+  trapMask <- mkTrapMask 1.6 3.2 1.5
 
   writeIORef globalEnv Env{..}
 
 ----------------------------------------------------------------
 
   do
+    b <- dialogAddButton settingsDialog "Apply" ResponseAccept
+    boxReorderChild dialogActionArea b 0
+
+  do
     ls <- initKeyList
-    settingsItem `on` menuItemActivated $ settingsButtonCallback ls
+
+    settingsItem `on` menuItemActivated $ do
+      readTVarIO conf >>= confToWidgets
+      widgetShow settingsDialog
+
+    settingsDialog `on` deleteEvent $ do
+      liftIO $ widgetHide settingsDialog
+      return True
+
+    settingsDialog `on` response $ \case
+      ResponseAccept -> settingsSetCallback ls
+      ResponseOk -> do
+        settingsSetCallback ls
+        widgetHide settingsDialog
+      _ -> return ()
 
   -- this is on realize so that the prompt-username window is centred over the main window
   window `on` realize $ initialStuff

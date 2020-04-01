@@ -27,6 +27,8 @@ import Graphics.UI.Gtk(postGUIAsync)
 
 import Base
 import Env
+import Settings
+import WidgetValue
 
 data SharpVal = SharpVal
   {sharpDepth :: String
@@ -147,7 +149,7 @@ killSharp SharpProcess{ph} = do
 registerSharp :: SharpProcess -> IO ()
 registerSharp sp = do
   sharps' <- atomicModifyIORef' sharps (\ss -> (sp : ss, ss))
-  when (length sharps' >= (getConf maxSharps)) $ do
+  when (length sharps' >= getConf maxSharps) $ do
     (s:_) <- map fst . sortOn snd <$> mapM (\s -> (s,) <$> readIORef (used s)) sharps'
     killSharp s
 
@@ -173,7 +175,7 @@ mkSharpProcess movelist position excludes = f <$> runSharp movelist position exc
           eNoGo = foldr (unionWith const) never
                         [ePause
                         ,whenE ((== Running) <$> status) eToggle
-                        ,whenE ((== (getConf sharpTimeLimit)) . Just <$> bTimer) eSecond'
+                        ,whenE ((== getConf sharpTimeLimit) . Just <$> bTimer) eSecond'
                         ,() <$ filterE ((== (maybe "" show (getConf sharpDepthLimit))) . sharpDepth) eVal
                         ]
 

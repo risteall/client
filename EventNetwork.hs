@@ -27,10 +27,12 @@ import qualified Graphics.UI.Gtk as Gtk
 import qualified Data.Function as Function
 import Data.Bifunctor
 import Data.Time.Clock
-import qualified Data.AppSettings as Settings
+import Data.AppSettings
 import Data.IORef
 import System.Process
 import Data.Functor.Identity
+import System.IO.Unsafe
+import Colour
 
 import Env
 import Draw
@@ -38,12 +40,12 @@ import Base
 import Notation hiding (get, set)
 import Match
 import GameTree
-import Time
+import Misc
 import qualified Node
 import Sharp
+import Settings
 
-
-bConf :: MomentIO (Behavior Settings.Conf)
+bConf :: MomentIO (Behavior Conf)
 bConf = do
   c <- liftIO $ readTVarIO (get conf)
   e <- fromAddHandler (get confAH)
@@ -238,13 +240,13 @@ drawTree gt offsets = top <$> setColour Nothing [] <*> f (tree gt) []
         arc x y (treeRadius * 1.8) 0 (2 * pi)
         stroke
     setColour :: Maybe Node.SomeNode -> [Int] -> Behavior (Render ())
-    setColour node ix = (\(r,g,b) -> setSourceRGBA r g b alpha) <$> colour
+    setColour node ix = (>>= flip setSourceColourAlpha alpha) . liftIO <$> colour  -- !!!!!!!!!!!
       where
-        colour | ix == currentPos gt = pure (getConf currentColour)
-               | ix == viewPos gt = pure (getConf viewColour)
-               | otherwise = fromMaybe c <$> maybe (pure Nothing) Node.nodeColour node
-        c | isPrefixOf ix (currentPos gt) = (0, 0, 0)
-          | otherwise = (0, 0, 0.5)
+        colour | ix == currentPos gt = pure (getConf' currentColour)
+               | ix == viewPos gt = pure (getConf' viewColour)
+               | otherwise = fromMaybe (return c) <$> maybe (pure Nothing) Node.nodeColour node
+        c | isPrefixOf ix (currentPos gt) = RGB 0 0 0
+          | otherwise = RGB 0 0 0.8
         alpha = if isPrefixOf ix (pathEnd gt) then 1 else 0.5
 
 drawMoves :: GameTree Node.SomeNode -> Double -> Behavior (DrawingArea -> Render ())
@@ -259,18 +261,23 @@ drawMoves gt treeWidth = g <$> sequenceA (zipWith f (tail (inits (pathEnd gt))) 
       where
         Just this = derefNode (tree gt) ix
         bg1 w = do
-          let (r, g, b) | ix == viewPos gt = (getConf viewColour)
-                        | ix == currentPos gt = (getConf currentColour)
-                        | even n = getConf goldColour
-                        | otherwise = getConf silverColour
-          setSourceRGB r g b
-          rectangle x (y n) (w - x) treeYGap
-          fill
+          let
+            f = do
+              rectangle x (y n) (w - x) treeYGap
+              fill
+            c = if | ix == currentPos gt -> currentColour
+                   | even n -> goldColour
+                   | otherwise -> silverColour
+          liftIO (getConf' c) >>= setSourceColour
+          f
+          when (ix == viewPos gt) $ do
+            liftIO (getConf' viewColour) >>= flip setSourceColourAlpha 0.5
+            f
         bg2 col x' w = do
-          let (r, g, b) | Just c <- col = c
-                        | even n = getConf lightGoldColour
-                        | otherwise = getConf lightSilverColour
-          setSourceRGB r g b
+          c <- liftIO $ if | Just c <- col -> c
+                           | even n -> toSRGB . blend 0.95 black . toColour <$> getConf' goldColour
+                           | otherwise -> toSRGB . blend 0.95 black . toColour <$> getConf' silverColour
+          setSourceColour c
           rectangle x' (y n) (w - x') treeYGap
           fill
 
@@ -280,14 +287,14 @@ drawMoves gt treeWidth = g <$> sequenceA (zipWith f (tail (inits (pathEnd gt))) 
       setFontSize (treeYGap * 0.75)
       let (bg1s, bg2s, s1s, s2s) = unzip4 l
       mapM_ ($ w) bg1s
-      setSourceRGB 0 0 0
+      setSourceRGB 0.8 0.8 0.8
       xs <- forM (zip s1s [0..]) $ \(s, n) -> do
         moveTo (x + treeYGap * 0.5) (yText n)
         showText s
         fst <$> getCurrentPoint
       let x' = treeMargin + max (x + 45) (maximum xs)
       mapM_ (\f -> f x' w) bg2s
-      setSourceRGB 0 0 0
+      setSourceRGB 0.8 0.8 0.8
       forM_ (zip s2s [0..]) $ \(s, n) -> do
         moveTo (x' + treeYGap * 0.5) (yText n)
         showText s
@@ -735,7 +742,7 @@ gameNetwork (params :: GameParams)
   
   ePlanFunc <- buttonAction (get (planButton . buttonSet))
                             ePlan
-                            $ (\c x v -> if Settings.getSetting' c enablePlans
+                            $ (\c x v -> if getSetting' c enablePlans
                                   then (\(m,p) -> Node.addFromRegular (\r -> Just (return (Node.SomeNode (Node.mkRegularNode r m p Nothing))))) <$> snd x
                                   else Nothing)
                                 <$> bConf' <*> nextMove <*> view
@@ -749,7 +756,7 @@ gameNetwork (params :: GameParams)
                    eMove
                    ePlanFunc
                    (whenE ((\gs -> not (or (isUser params)) || isJust (result gs)) <$> gameState) eSharp)
-                   (flip Settings.getSetting' killPlans <$> bConf')
+                   (flip getSetting' killPlans <$> bConf')
                    haveInput
                    eInput
                    eSecond
@@ -807,7 +814,7 @@ gameNetwork (params :: GameParams)
                          [pure nameString, bigLabel <$> bClocks ! c, usedLabel <$> bClocks ! c]
 
   drawFB <- switchStepper $ drawNode . viewNode <$> sTree
-  let drawB = drawFB <*> shadowBoard <*> ((\as la -> maybe as (:as) la) <$> as <*> la) <*> liveTraps <*> ms <*> visible <*> squareMap
+  let drawB = drawFB <*> shadowBoard <*> ((\as la -> maybe as (:as) la) <$> as <*> la) <*> liveTraps <*> ms <*> visible <*> squareMap <*> bConf'
 
   onChanges $ get setDrawBoard <$> drawB
 
@@ -824,14 +831,14 @@ gameNetwork (params :: GameParams)
   let setupLabelsB = (\(ShadowBoard _ remaining _) -> map show $ elems remaining) <$> shadowBoard
   onChanges $ zipWithM_ labelSetText (reverse (get setupLabels)) <$> setupLabelsB
 
-  let f setup c b (ShadowBoard _ _ current) v = do
+  let f setup c b (ShadowBoard _ _ current) v conf = do
           zipWithM_ ($) (if setup then [widgetShow, widgetHide] else [widgetHide, widgetShow])
                         [get (setupGrid . widgets), get (captureGrid . widgets)]
           if setup then zipWithM_ g (reverse (get setDrawSetupIcons)) [0 .. length pieceInfo - 1]
-                   else get setDrawCapture (drawCaptures b v (get icons))
+                   else get setDrawCapture (drawCaptures b v (get icons Map.! getSetting' conf pieceSet))
         where
-          g set i = set $ drawSetupIcon (i == current) (get icons ! (c, i))
-    in onChanges $ f <$> (Node.setupPhase <$> view) <*> (Node.toMove <$> view) <*> (posBoard <$> viewPosition) <*> shadowBoard <*> visible
+          g set i = set $ drawSetupIcon (i == current) (get icons Map.! getSetting' conf pieceSet ! (c, i))
+    in onChanges $ f <$> (Node.setupPhase <$> view) <*> (Node.toMove <$> view) <*> (posBoard <$> viewPosition) <*> shadowBoard <*> visible <*> bConf'
 
   let f pos visible | and visible = printf "HarLog: %+.2f" $ harlog $ posBoard pos
                      | otherwise = ""
@@ -852,7 +859,7 @@ newGame (params :: GameParams)
   = do
   join $ readIORef (get killGameRef)
 
-  mySide <- getSetting viewMySide
+  mySide <- getConf' viewMySide
   let initialSide = if mySide then fromMaybe Gold $ find (isUser params !) [Gold, Silver]
                               else Gold
 

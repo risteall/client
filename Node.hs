@@ -14,12 +14,14 @@ import Data.IORef
 import System.IO.Unsafe
 import Control.Concurrent
 import Data.Time.Clock
+import Data.Colour.SRGB (RGB)
 
 import Base
-import Time
+import Misc
 import GameTree
 import Sharp
 import Env
+import Settings
 
 data RegularContent = RegularContent
   {move :: GenMove
@@ -174,14 +176,14 @@ movelistEntry n@(SomeNode n') = case getContentS n of
                  (show $ (case posToMove (prev n') of Gold -> id; Silver -> flipEval) (sharpEval v))
                  (sharpDepth v)
 
-nodeColour :: SomeNode -> Behavior (Maybe (Double, Double, Double))
+nodeColour :: SomeNode -> Behavior (Maybe (IO (RGB Double)))
 nodeColour n = case getContentS n of
     Left _ -> pure Nothing
     Right s -> Just . g <$> status s
   where
-    g Running = getConf runningSharpColour
-    g Paused = getConf pausedSharpColour
-    g Stopped = getConf stoppedSharpColour
+    g Running = getConf' runningSharpColour
+    g Paused = getConf' pausedSharpColour
+    g Stopped = getConf' stoppedSharpColour
 
 ----------------------------------------------------------------
 

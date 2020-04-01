@@ -268,6 +268,7 @@ treePlan x gt@GT{tree, viewPos} = case find (\(Node x' _, _) -> x == x')
   where f = derefForest tree viewPos
 
   -- returns whether to kill arrows
+  -- killPlans shouldn't count Sharp as a plan
 treeMove :: Eq a => Bool -> Bool -> GameTree a -> a -> (GameTree a, Bool, [a])
 treeMove killPlans haveInput gt@GT{tree = t, currentPos = cp, viewPos = vp} x
       = if killPlans then kill gt' else (gt', False, [])

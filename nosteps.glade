@@ -772,7 +772,7 @@
         <property name="orientation">vertical</property>
 <!--        <property name="spacing">2</property>-->
         <child internal-child="action_area">
-          <object class="GtkButtonBox" id="dialog-action_area1">
+          <object class="GtkButtonBox" id="dialog-action-area">
             <property name="can_focus">False</property>
             <property name="layout_style">end</property>
           </object>
@@ -786,141 +786,17 @@
 	<child>
 	  <object class="GtkNotebook">
 	    <property name="visible">True</property>
-	
+
 	    <child>
-	      <object class="GtkGrid">
-		<property name="visible">True</property>
-		<child>
-		  <object class="GtkLabel">
-		    <property name="visible">True</property>
-		    <property name="label">Username:</property>
-		  </object>
-		  <packing>
-		    <property name="left_attach">0</property>
-		    <property name="top_attach">0</property>
-		  </packing>
-		</child>
-		<child>
-		  <object class="GtkEntry" id="username-entry">
-		    <property name="visible">True</property>
-		    <property name="activates_default">True</property>
-		    <property name="margin_left">5</property>
-		  </object>
-		  <packing>
-		    <property name="left_attach">1</property>
-		    <property name="top_attach">0</property>
-		  </packing>
-		</child>
-		<child>
-		  <object class="GtkLabel">
-		    <property name="visible">True</property>
-		    <property name="label">Password:</property>
-		  </object>
-		  <packing>
-		    <property name="left_attach">0</property>
-		    <property name="top_attach">1</property>
-		  </packing>
-		</child>
-		<child>
-		  <object class="GtkEntry" id="password-entry">
-		    <property name="visible">True</property>
-		    <property name="activates_default">True</property>
-		    <property name="margin_left">5</property>
-		  </object>
-		  <packing>
-		    <property name="left_attach">1</property>
-		    <property name="top_attach">1</property>
-		  </packing>
-		</child>
-		<child>
-		  <object class="GtkBox" id="view-side-box">
-		    <property name="visible">True</property>
-		    <property name="orientation">horizontal</property>
-		    <property name="spacing">5</property>
-		    <child>
-		      <object class="GtkLabel">
-			<property name="visible">True</property>
-			<property name="label">View games from:</property>
-		      </object>
-		    </child>
-		    <child>
-		      <object class="GtkRadioButton" id="gold-side-button">
-			<property name="visible">True</property>
-			<property name="label">gold side</property>
-			<!--		<property name="can_focus">True</property>-->
-		      </object>
-		    </child>
-		    <child>
-		      <object class="GtkRadioButton" id="my-side-button">
-			<property name="visible">True</property>
-			<property name="label">my side</property>
-			<!--		<property name="can_focus">True</property>-->
-			<property name="group">gold-side-button</property>
-		      </object>
-		    </child>
-		  </object>
-		  <packing>
-		    <property name="left_attach">0</property>
-		    <property name="top_attach">2</property>
-		    <property name="width">2</property>
-		  </packing>
-		</child>
-		<child>
-		  <object class="GtkBox">
-		    <property name="visible">True</property>
-		    <property name="orientation">horizontal</property>
-		    <property name="spacing">5</property>
-		    <child>
-		      <object class="GtkCheckButton" id="enable-plans-button">
-			<property name="visible">True</property>
-		      </object>
-		    </child>
-		    <child>
-		      <object class="GtkLabel">
-			<property name="visible">True</property>
-			<property name="label">Enable plan variations</property>
-		      </object>
-		    </child>
-		  </object>
-		  <packing>
-		    <property name="left_attach">0</property>
-		    <property name="top_attach">3</property>
-		    <property name="width">2</property>
-		  </packing>
-		</child>
-
-		<child>
-		  <object class="GtkBox">
-		    <property name="visible">True</property>
-		    <property name="orientation">horizontal</property>
-		    <property name="spacing">5</property>
-		    <child>
-		      <object class="GtkCheckButton" id="kill-plans-button">
-			<property name="visible">True</property>
-		      </object>
-		    </child>
-		    <child>
-		      <object class="GtkLabel">
-			<property name="visible">True</property>
-			<property name="label">Kill plans at current position when move comes in</property>
-		      </object>
-		    </child>
-		  </object>
-		  <packing>
-		    <property name="left_attach">0</property>
-		    <property name="top_attach">4</property>
-		    <property name="width">2</property>
-		  </packing>
-		</child>
-
-	      </object>
+              <object class="GtkGrid" id="settings-grid">
+                <property name="visible">True</property>
+                <property name="can_focus">False</property>
+              </object>
 	      <packing>
 	      	<property name="tab_label">General</property>
 	      </packing>
 	    </child>
 
-
-	    
 	    <child>
 	      <object class="GtkScrolledWindow">
 		<property name="vexpand">True</property>
@@ -963,6 +839,17 @@
 	      	<property name="tab_label">Keys</property>
 	      </packing>
 	    </child>
+
+	    <child>
+              <object class="GtkGrid" id="colour-grid">
+                <property name="visible">True</property>
+                <property name="can_focus">False</property>
+              </object>
+	      <packing>
+	      	<property name="tab_label">Colours</property>
+	      </packing>
+	    </child>
+
 	  </object>
 	</child>
       </object>

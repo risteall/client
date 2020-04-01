@@ -8,18 +8,25 @@ import Control.Monad
 import Control.Applicative
 import qualified Data.Function as Function
 import Data.Bifunctor
-import Graphics.UI.Gtk hiding (get, Arrow)
+import Graphics.UI.Gtk hiding (get, Arrow, rectangle)
 import Data.Array.IArray
 import Data.Maybe
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Reactive.Banana
 import Reactive.Banana.Frameworks
+import System.IO.Unsafe
+import Colour
+import Data.AppSettings
+import GHC.Word
+import Data.Array.MArray
+import Control.Concurrent.STM
 
 import Base
 import qualified Node
 import Match
 import Env
+import Settings
 
 -- does Shadow need its own module ?
 data ShadowBoard = ShadowBoard Board (Array Int Int) Int
@@ -80,12 +87,13 @@ overlappingArrows (p1,p2) (q1,q2)
     && not (and (liftA2 (<=) [p1,p2] [q1,q2]) || and (liftA2 (>=) [p1,p2] [q1,q2]))
   where collinear (x1,y1) (x2,y2) (x3,y3) = (x2-x1) * (y3-y1) - (x3-x1) * (y2-y1) == 0
 
-drawArrowSet :: [(Arrow, Render ())] -> Render ()
-drawArrowSet = mapM_ f . concatMap addOffsets
-                       . equivalenceClasses (overlappingArrows `Function.on` fst)
-                       . filter (uncurry (/=) . fst)
+drawArrowSet :: [(Arrow, Render ())] -> Conf -> Render ()
+drawArrowSet arrs conf
+  = mapM_ f $ concatMap addOffsets
+            $ equivalenceClasses (overlappingArrows `Function.on` fst)
+            $ filter (uncurry (/=) . fst) arrs
   where
-    f ((arr, action), i) = do {action; drawArrow arr i}
+    f ((arr, action), i) = do {action; drawArrow arr i conf}
     g (arr, action) arrs = ((arr, action), offset) : arrs
       where Just offset = find (\i -> not (any (\((a,act),offs) -> overlappingArrows arr a && offs == i) arrs)) offsets
             offsets = 0 : map (\n -> if n <= 0 then 2 - n else -n) offsets
@@ -108,21 +116,22 @@ arrowPath (u1,v1) (u2,v2) = do
 pathToArrow :: [Square] -> Arrow
 pathToArrow p = (head p, last p)
 
-drawPath :: [Square] -> Render ()
-drawPath arr = do
-    setLineWidth arrowWidth
+drawPath :: [Square] -> Conf -> Render ()
+drawPath arr conf = do
+    setLineWidth aw
     setLineCap LineCapRound
     setLineJoin LineJoinRound
     bendyArrow arr
     stroke
   where
+    aw = getSetting' conf arrowWidth
     arrowPoints = map (\(x,y) -> (fromIntegral x + 0.5, fromIntegral y + 0.5)) arr
     bendyArrow [] = return ()
     bendyArrow [_] = return ()
     bendyArrow arr
       | head arr == last arr = do
           let ((x,y):_) = arrowPoints
-          arc x y (0.5 - arrowWidth / 2) 0 (2 * pi)
+          arc x y (0.5 - aw / 2) 0 (2 * pi)
       | straightPath arr = arrowPath (head arrowPoints) (last arrowPoints)
     bendyArrow [_,_,_] = do
       let [(x0,y0),p1,p2] = arrowPoints
@@ -171,17 +180,16 @@ straightPath arr = case zipWith (\(x1,y1) (x2,y2) -> (x1-x2, y1-y2)) arr (tail a
   [] -> True
   (a:as) -> all (== a) as
 
-arrowWidth = 0.15 :: Double
-
 arrowHead :: Render ()
 arrowHead = do
   relLineTo (-0.3) 0.2
   relMoveTo 0.3 (-0.2)
   relLineTo (-0.3) (-0.2)
 
-drawArrow :: Arrow -> Int -> Render ()
-drawArrow ((x1,y1), (x2,y2)) offset = do
-  setLineWidth arrowWidth
+drawArrow :: Arrow -> Int -> Conf -> Render ()
+drawArrow ((x1,y1), (x2,y2)) offset conf = do
+  let aw = getSetting' conf arrowWidth
+  setLineWidth aw
   setLineCap LineCapRound
   setLineJoin LineJoinRound
   save
@@ -190,7 +198,7 @@ drawArrow ((x1,y1), (x2,y2)) offset = do
       b = u2 - u1
       d = sqrt (a^2 + b^2)
       (a',b') = if (a,b) <= (0,0) then (a,b) else (-a,-b)
-      f x = x / d * 0.65 * arrowWidth * fromIntegral offset
+      f x = x / d * 0.65 * aw * fromIntegral offset
   translate (f a') (f b')
   arrowPath (u1,v1) (u2,v2)
   restore
@@ -215,30 +223,83 @@ withTransform x y size action = do
   action
   restore
 
-drawEmptyBoard :: Render ()
-drawEmptyBoard = do
-  let (r, g, b) = getConf trapColour in setSourceRGB r g b
-  forM_ trapSquares $ \(x,y) -> do
-    moveTo (fromIntegral x) (fromIntegral y)
-    relLineTo 0 1
-    relLineTo 1 0
-    relLineTo 0 (-1)
-    closePath
-    fill
-  setSourceRGB 0.5 0.5 0.5
-  (a,b) <- deviceToUserDistance 1 0
-  setLineWidth (sqrt (a^2 + b^2))
-  forM_ [0..8] $ \x -> do
-    moveTo x 0
-    lineTo x 8
-    stroke
-    moveTo 0 x
-    lineTo 8 x
-    stroke
+trapMaskSize = 100 :: Int
 
-drawLiveTraps :: Map Square Bool -> (Square -> Square) -> Render ()
-drawLiveTraps lt squareMap = do
-  let (r, g, b) = getConf liveTrapColour in setSourceRGB r g b
+mkTrapMask :: MonadIO m => Double -> Double -> Double -> m Surface
+mkTrapMask radius pow midGradient = do
+  s <- liftIO $ createImageSurface FormatA8 trapMaskSize trapMaskSize
+  renderWith s $ do
+    liftIO $ do
+      stride <- imageSurfaceGetStride s
+      a <- imageSurfaceGetPixels s :: IO (SurfaceData Int Word8)
+      let
+        f x y = round ((1 - min 1 z') * fromIntegral (maxBound :: Word8))
+          where
+            k = fromIntegral (trapMaskSize - 1) / 2
+            x', y' :: Double
+            x' = abs $ (fromIntegral x - k) / k
+            y' = abs $ (fromIntegral y - k) / k
+            z = (x' ** pow + y' ** pow) ** recip pow / radius
+            u a x = a * x / sqrt (1 + (a^2-1) * x^2)
+            v a x = (1 + u a (2*x-1)) / 2
+            z' = v midGradient z
+      forM_ [0..trapMaskSize-1] $ \x ->
+        forM_ [0..trapMaskSize-1] $ \y ->
+          writeArray a (y * stride + x) (f x y)
+    surfaceMarkDirty s
+    return s
+
+drawTrap :: Conf -> Render ()
+drawTrap conf = do
+  case getSetting' conf trapGradient of
+    False -> do
+      setSourceColour $ getSetting' conf trapColour
+      rectangle 0 0 1 1
+      fill
+    True -> do
+      let c = getSetting' conf boardColour1
+      setSourceColour $ maybe c (blendRGB 0.5 c) $ getSetting' conf boardColour2
+      rectangle 0 0 1 1
+      fill
+      setSourceColour $ getSetting' conf trapColour
+      withTransform 0 0 (1 / fromIntegral trapMaskSize) $ maskSurface (get trapMask) 0 0
+    
+drawEmptyBoard :: Conf -> Render ()
+drawEmptyBoard conf = do
+  setSourceRGB 0 0 0
+  paint
+  setSourceColour $ getSetting' conf boardColour1
+  rectangle 0 0 (fromIntegral boardWidth) (fromIntegral boardHeight)
+  fill
+
+  case getSetting' conf boardColour2 of
+    Nothing -> return ()
+    Just c -> do
+      setSourceColour c
+      forM_ (liftA2 (,) [0 .. boardWidth-1] [0 .. boardHeight - 1]) $ \(x,y) -> when (odd (x + y)) $ do
+        rectangle (fromIntegral x) (fromIntegral y) 1 1
+        fill
+
+  forM_ trapSquares $ \(x,y) -> withTransform (fromIntegral x) (fromIntegral y) 1 $ do
+    drawTrap conf
+
+  case getSetting' conf gridColour of
+    Nothing -> return ()
+    Just c -> do
+      setSourceColour c
+      (a,b) <- deviceToUserDistance 1 0
+      setLineWidth (sqrt (a^2 + b^2))
+      forM_ [0..8] $ \x -> do
+        moveTo x 0
+        lineTo x 8
+        stroke
+        moveTo 0 x
+        lineTo 8 x
+        stroke
+
+drawLiveTraps :: Map Square Bool -> (Square -> Square) -> Conf -> Render ()
+drawLiveTraps lt squareMap conf = do
+  setSourceColour $ getSetting' conf liveTrapColour
   setLineWidth 0.1
   forM_ (map squareMap $ Map.keys $ Map.filter id lt) $ \(u, v) -> do
     moveTo (fromIntegral u) (fromIntegral v)
@@ -257,21 +318,23 @@ drawPiece surface alpha = do
   paintWithAlpha alpha
   restore
 
-drawPieces :: Array Piece Surface -> Array Colour Bool -> Board -> (Square -> Square) -> Render ()
-drawPieces icons visible board squareMap = forM_ (map (first squareMap) (assocs board)) $ \case
-  ((x,y), Just piece@(c,_)) | visible ! c -> withTransform (fromIntegral x) (fromIntegral y) 1
-                                                           $ drawPiece (icons ! piece) 1
+drawPieces :: Array Colour Bool -> Board -> (Square -> Square) -> Conf -> Render ()
+drawPieces visible board squareMap conf = forM_ (map (first squareMap) (assocs board)) $ \case
+  ((x,y), Just piece@(c,_))
+    | visible ! c -> withTransform (fromIntegral x) (fromIntegral y) 1
+      $ drawPiece (get icons Map.! getSetting' conf pieceSet ! piece) $ getSetting' conf pieceAlpha
   _ -> return ()
 
-drawSetupPieces :: Array Piece Surface -> Colour -> Board -> ShadowBoard -> (Square -> Square) -> Render ()
-drawSetupPieces icons c board shadowBoard squareMap = do
+drawSetupPieces :: Colour -> Board -> ShadowBoard -> (Square -> Square) -> Conf -> Render ()
+drawSetupPieces c board shadowBoard squareMap conf = do
   sequence_ $ zipWith3 (\(x,y) m1 m2 -> maybe (return ())
                                               (withTransform (fromIntegral x) (fromIntegral y) 1)
                                               (m1 <|> m2))
                        (map squareMap (range boardRange))
-                       (map (fmap (\p -> drawPiece (icons ! p) 1)) (elems board))
-                       (map (fmap (\(p, solid) -> drawPiece (icons ! p) (if solid then 1 else 0.5)))
+                       (map (fmap (\p -> drawPiece (icons' ! p) 1)) (elems board))
+                       (map (fmap (\(p, solid) -> drawPiece (icons' ! p) (if solid then 1 else 0.5)))
                             (elems (realiseShadow c shadowBoard)))
+    where icons' = get icons Map.! getSetting' conf pieceSet
 
 trappedPieceSize = 0.4 :: Double
 
@@ -309,29 +372,35 @@ drawNonsetup
     (liveTraps :: Map Square Bool)
     (ms :: Maybe MoveSet)
     (visible :: Array Colour Bool)
-    (icons :: Array Piece Surface)
     (squareMap :: Square -> Square)
+    (conf :: Conf)
     (canvas :: DrawingArea)
     = do
+  let icons' = get icons Map.! getSetting' conf pieceSet
+  
   x <- liftIO $ squareSize canvas
   setSourceRGB 1 1 1
   paint
   translate borderWidth borderWidth
   scale x x
 
-  drawEmptyBoard
-  drawLiveTraps liveTraps squareMap
+  drawEmptyBoard conf
+  drawLiveTraps liveTraps squareMap conf
 
-  drawPieces icons
-             (if depth <= 2 && null arrows then listArray (Gold,Silver) (repeat True) else visible)
+  drawPieces (if depth <= 2 && null arrows then listArray (Gold,Silver) (repeat True) else visible)
              (fromMaybe board (ms >>= currentMove >>= playMove board))
              squareMap
+             conf
 
-  let pathColour (Just (c,_)) _ True | not (visible ! c) = let (r, g, b) = getConf invisibleArrowColour in setSourceRGB r g b
-      pathColour Nothing _ True | not (visible ! Gold) || not (visible ! Silver) = let (r, g, b) = getConf invisibleArrowColour in setSourceRGB r g b
-      pathColour (Just (Gold,_)) solid _ = let (r, g, b) = getConf goldArrowColour in setSourceRGBA r g b (if solid then 1 else 0.5)
-      pathColour (Just (Silver,_)) solid _ = let (r, g, b) = getConf silverArrowColour in setSourceRGBA r g b (if solid then 1 else 0.5)
-      pathColour Nothing _ _ = setSourceRGB 0 0 0
+  let
+    alpha True = 0.7
+    alpha False = 0.5
+
+  let pathColour (Just (c,_)) _ True | not (visible ! c) = setSourceColourAlpha (getSetting' conf invisibleArrowColour) (alpha True)
+      pathColour Nothing _ True | not (visible ! Gold) || not (visible ! Silver) = setSourceColourAlpha (getSetting' conf invisibleArrowColour) (alpha True)
+      pathColour (Just (Gold,_)) solid _ = setSourceColourAlpha (getSetting' conf goldArrowColour) (alpha solid)
+      pathColour (Just (Silver,_)) solid _ = setSourceColourAlpha (getSetting' conf silverArrowColour) (alpha solid)
+      pathColour Nothing _ _ = setSourceRGB 0.5 0.5 0.5
 
       noInput = null arrows && not (or liveTraps)
 
@@ -339,13 +408,14 @@ drawNonsetup
      | noInput -> do
          let m = maybe (Move []) id move
              (straight, bendy) =  partition (straightPath . snd) $ moveToPaths m
-         drawArrowSet $ map (first (bimap squareMap squareMap))
-                            $ map (\(p, path) -> (pathToArrow path, pathColour (Just p) False False))
-                                  straight
-         forM_ bendy $ \(p, path) -> do {pathColour (Just p) False False; drawPath $ map squareMap path}
+         drawArrowSet (map (first (bimap squareMap squareMap))
+                           $ map (\(p, path) -> (pathToArrow path, pathColour (Just p) False False))
+                                 straight)
+                      conf
+         forM_ bendy $ \(p, path) -> do {pathColour (Just p) False False; drawPath (map squareMap path) conf}
 
          forM_ (Map.assocs (moveToCaptureSet m))
-               $ \(sq, pieces) -> zipWithM_ (\p i -> drawTrappedPiece (icons ! p) (squareMap sq) i Nothing) pieces [0..]
+               $ \(sq, pieces) -> zipWithM_ (\p i -> drawTrappedPiece (icons' ! p) (squareMap sq) i Nothing) pieces [0..]
 
      | otherwise -> do
          let (straight, bendy) = case ms >>= currentMove of
@@ -356,8 +426,8 @@ drawNonsetup
                                                                   arrows
              straightActions = map (\(p, path) -> (pathToArrow path, pathColour (Just p) False False)) straight
              arrActions = map (\a -> (a, pathColour (board ! fst a) True True)) arrows
-         drawArrowSet $ map (first (bimap squareMap squareMap)) $ arrActions ++ straightActions
-         forM_ bendy $ \(p, path) -> do {pathColour (Just p) False False; drawPath $ map squareMap path}
+         drawArrowSet (map (first (bimap squareMap squareMap)) $ arrActions ++ straightActions) conf
+         forM_ bendy $ \(p, path) -> do {pathColour (Just p) False False; drawPath (map squareMap path) conf}
 
          -- should make the correspondence between this and buttonPressCallback explicit
          let f :: Square -> [Bool] -> ([Piece], [Piece]) -> Render ()
@@ -365,36 +435,36 @@ drawNonsetup
                                                                 ++ zipWith h bs optional)
                                                              [0..]
                where
-                 g m i = drawTrappedPiece (icons ! m) (squareMap trap) i Nothing
-                 h b o i = drawTrappedPiece (icons ! o) (squareMap trap) i (Just b)
+                 g m i = drawTrappedPiece (icons' ! m) (squareMap trap) i Nothing
+                 h b o i = drawTrappedPiece (icons' ! o) (squareMap trap) i (Just b)
 
          case ms of
            Nothing -> return ()
            Just MoveSet{currentCaptures, captures} -> sequence_ $ Map.intersectionWithKey f currentCaptures captures
 
-drawSetup :: Colour -> Board -> ShadowBoard -> Array Piece Surface -> (Square -> Square) -> DrawingArea -> Render ()
-drawSetup c board sb icons squareMap canvas = do
+drawSetup :: Colour -> Board -> ShadowBoard -> (Square -> Square) -> Conf -> DrawingArea -> Render ()
+drawSetup c board sb squareMap conf canvas = do
   x <- liftIO $ squareSize canvas
   setSourceRGB 1 1 1
   paint
   translate borderWidth borderWidth
   scale x x
 
-  drawEmptyBoard
+  drawEmptyBoard conf
 
-  drawSetupPieces icons c board sb squareMap
+  drawSetupPieces c board sb squareMap conf
 
-drawNode :: Maybe Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> DrawingArea -> Render ())
+drawNode :: Maybe Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> Conf -> DrawingArea -> Render ())
 drawNode node
   | Node.setupPhase node
   = fromMaybe (error "wazzock")
       $ Node.useRegular' node $ \n -> pure
-        $ \sb _ _ _ _ squareMap -> drawSetup (posToMove (Node.regularPosition n))
+        $ \sb _ _ _ _ squareMap conf -> drawSetup (posToMove (Node.regularPosition n))
                                              (posBoard (Node.regularPosition n))
-                                             sb (get icons) squareMap
+                                             sb squareMap conf
   | otherwise = f <$> Node.board node <*> ((>>= either (const Nothing) Just) <$> Node.getMove node)
   where
-    f board move _ as lt ms visible squareMap = drawNonsetup (Node.depth node) board move as lt ms visible (get icons) squareMap
+    f board move _ = drawNonsetup (Node.depth node) board move
 
 drawSetupIcon :: Bool -> Surface -> DrawingArea -> Render ()
 drawSetupIcon b s da = do
