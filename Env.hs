@@ -34,7 +34,7 @@ data Widgets = Widgets
   ,boardCanvas, captureCanvas, treeCanvas :: DrawingArea
   ,gameLabel, topPlayer, bottomPlayer, gameClock, topClock, bottomClock, statusLabel, harlogLabel, moveLabel, topUsedClock, bottomUsedClock :: Label
   ,setupGrid, captureGrid, settingsGrid, colourGrid :: Grid
-  ,myGamesItem, openGamesItem, watchGamesItem, viewGameItem, playBotItem, flipBoard :: MenuItem
+  ,myGamesItem, openGamesItem, watchGamesItem, recentGamesItem, viewGameItem, playBotItem, flipBoard :: MenuItem
   ,blindModeMenu :: Menu
   ,settingsItem :: MenuItem
   ,settingsDialog :: Dialog
@@ -44,6 +44,9 @@ data Widgets = Widgets
   ,keyTreeView :: TreeView
   ,dialogActionArea :: ButtonBox
   ,menuBar :: MenuBar
+  ,gameMenu :: Menu
+  ,gameMenuItem :: MenuItem
+  ,buttonGrid, gameGrid :: Grid
   }
 
 mkWidgetGetter ''Widgets "getWidgets"
@@ -98,6 +101,7 @@ data Env = Env
   ,widgetsToConf :: IO (Conf -> Conf)
   ,confToWidgets :: Conf -> IO ()
   ,trapMask :: Surface
+  ,copyMovelistAH :: AddHandler ()
   }
 
 globalEnv :: IORef Env

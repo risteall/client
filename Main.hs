@@ -1,6 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds #-}
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds, TypeApplications #-}
 
 import Data.Array.IArray
 import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle)
@@ -99,7 +99,8 @@ keyBindings = map (\(a,b,c,d,e) -> (Setting a (b, keyFromName (fromString c)), d
                   ,("delete-all-key", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", Nothing)
                   ,("delete-from-here-key", [], "Delete", "Remove plans starting at current position", Nothing)
                   ,("toggle-sharp-key", [], "p", "Pause and unpause Sharp", Nothing)
-                  ,("toggle-fullscreen", [], "F11", "Toggle fullscreen", Nothing)
+                  ,("toggle-fullscreen-key", [], "F11", "Toggle fullscreen", Nothing)
+                  ,("copy-movelist-key", [Gtk.Control], "c", "Copy movelist", Nothing)
                   ]
 
 deriving instance Read Modifier
@@ -127,17 +128,6 @@ initKeyActions w bs = do
 
 ----------------------------------------------------------------
   
-entryAccessor :: String -> IO (HBox, IO String, String -> IO ())
-entryAccessor label = do
-  box <- hBoxNew False 5
-  l <- labelNew (Just label)
-  e <- entryNew
-  entrySetActivatesDefault e True
-  containerAdd box l
-  containerAdd box e
-
-  return (box, entryGetText e, entrySetText e)
-
 -- dialogValue :: WidgetValue a b => String -> (a -> IO c) -> IO c
 -- dialogValue label f = do
 --   d <- newDialog
@@ -501,10 +491,52 @@ watchGameCallback = do
 
   return ()
 
+recentGamesCallback :: IO ()
+recentGamesCallback = background (withStatus "Fetching games" getRecentGames) $ \games -> do
+  d <- dialogNew
+  Gtk.set d [windowTransientFor := get (window . widgets)
+            ,windowDefaultWidth := 800
+            ,windowDefaultHeight := 500
+            ]
+
+  dialogAddButton d "Cancel" ResponseCancel
+  dialogAddButton d "View" ResponseOk
+  u <- castToContainer <$> dialogGetContentArea d
+
+  (ts, tv) <- makeTreeStore
+    (map (\g -> Node g []) games)
+    [("Gold", \g -> [cellText := (printf "%s%s (%d)" (if rgiWinner g == Gold then "*" else "") (rgiNames g ! Gold) (rgiRatings g ! Gold) :: String)])
+    ,("Silver", \g -> [cellText := (printf "%s%s (%d)" (if rgiWinner g == Silver then "*" else "") (rgiNames g ! Silver) (rgiRatings g ! Silver) :: String)])
+    ,("Time control", \g -> [cellText := show (rgiTimeControl g)])
+    ,("Rated", \g -> [cellText := if rgiRated g then "R" else "U"])
+    ,("Reason", \g -> [cellText := show (rgiReason g)])
+    ,("Move count", \g -> [cellText := show (rgiMoveCount g)])
+    ]
+
+  treeViewExpandAll tv
+
+  sw <- scrolledWindowNew Nothing Nothing
+  Gtk.set sw [widgetVExpand := True
+             ,widgetHeightRequest := 100
+             ]
+  containerAdd sw tv
+  containerAdd u sw
+
+  widgetShowAll d
+
+  d `on` response $ \case
+    ResponseOk -> treeViewGetSelection tv >>= treeSelectionGetSelected >>= \case
+      Nothing -> return ()
+      Just iter -> treeModelGetPath ts iter >>= treeStoreGetValue ts >>= \g ->
+        viewGame (rgiGid g) (widgetDestroy d)
+    _ -> widgetDestroy d
+
+  return ()
+
 ----------------------------------------------------------------
 
-makeDialog :: WidgetClass w => w -> String -> IO Bool -> IO ()
-makeDialog w buttonText f = do
+makeDialog' :: WidgetClass w => w -> String -> (IO () -> IO ()) -> IO ()
+makeDialog' w buttonText f = do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)]
   dialogAddButton d "Cancel" ResponseCancel
@@ -513,20 +545,22 @@ makeDialog w buttonText f = do
   containerAdd u w
   widgetShowAll d
   d `on` response $ \case
-    ResponseOk -> f >>= \case
-      True -> widgetDestroy d
-      False -> return ()
+    ResponseOk -> f (widgetDestroy d)
     _ -> widgetDestroy d
   return ()
 
+makeDialog :: WidgetClass w => w -> String -> IO Bool -> IO ()
+makeDialog w buttonText f = do
+  makeDialog' w buttonText $ \kill -> f >>= \case
+    True -> kill
+    False -> return ()
+
 viewGameCallback :: IO ()
 viewGameCallback = do
-  (w,g,_) <- entryAccessor "Enter game id:"
-  makeDialog w "View game" $ g >>= \s -> case readMaybe s of
-    Just n -> do
-      viewGame n
-      return True
-    _ -> return False
+  (w,get,_) <- labelledAccessor "Enter game id:"
+  makeDialog' w "View game" $ \killDialog -> get >>= \case
+    Nothing -> return ()
+    Just n -> viewGame n killDialog
 
 expandGame :: TimeControl -> [(GenMove, Maybe Int)] -> Either String [Node.Node 'Node.Regular]
 expandGame tc moves = snd <$> mapAccumLM f (Nothing, Just (initialReserve tc)) moves
@@ -537,23 +571,25 @@ expandGame tc moves = snd <$> mapAccumLM f (Nothing, Just (initialReserve tc)) m
                              in ((Just n', r'), n'))
                         <$> playGenMove (Node.regularPosition n) m
 
-viewGame :: Int -> IO ()
-viewGame n = do
-  background (withStatus "Fetching game" (getServerGame n)) $ \(Just sgi) -> do  -- TODO: check return value
-    let nodes = either error id $ expandGame (sgiTimeControl sgi) (map (second Just) (sgiMoves sgi))
-        pos = Node.regularPosition $ if null nodes then Nothing else Just (last nodes)
-
-    newGame GameParams{names = sgiNames sgi
-                      ,ratings = Just <$> sgiRatings sgi
-                      ,isUser = mapColourArray (const False)
-                      ,timeControl = sgiTimeControl sgi
-                      ,rated = sgiRated sgi
-                      }
-            (foldr (\n f -> [Node (Node.SomeNode n) f]) [] nodes)
-            (\_ -> return ()) (return Nothing)
-            (return (pure GameState{started = True, position = pos, result = Just $ sgiResult sgi},
-                     never))
-            (return ())
+viewGame :: Int -> IO () -> IO ()
+viewGame n killDialog = do
+  background (withStatus "Fetching game" (getServerGame n)) $ \case
+    Nothing -> return ()
+    Just sgi -> do
+      killDialog
+      let nodes = either error id $ expandGame (sgiTimeControl sgi) (map (second Just) (sgiMoves sgi))
+          pos = Node.regularPosition $ if null nodes then Nothing else Just (last nodes)
+      newGame GameParams{names = sgiNames sgi
+                        ,ratings = Just <$> sgiRatings sgi
+                        ,isUser = mapColourArray (const False)
+                        ,timeControl = sgiTimeControl sgi
+                        ,rated = sgiRated sgi
+                        }
+              (foldr (\n f -> [Node (Node.SomeNode n) f]) [] nodes)
+              (\_ -> return ()) (return Nothing)
+              (return (pure GameState{started = True, position = pos, result = Just $ sgiResult sgi},
+                       never))
+              (return ())
 
 ----------------------------------------------------------------
 
@@ -986,6 +1022,7 @@ main = do
   myGamesItem `on` menuItemActivated $ readTVarIO (get myGames) >>= serverGameCallback
   openGamesItem `on` menuItemActivated $ readTVarIO (get openGames) >>= serverGameCallback
   watchGamesItem `on` menuItemActivated $ watchGameCallback
+  recentGamesItem `on` menuItemActivated $ recentGamesCallback
   viewGameItem `on` menuItemActivated $ viewGameCallback
   playBotItem `on` menuItemActivated $ playBotCallback
 
@@ -1003,8 +1040,10 @@ main = do
   botLadderBotsRef <- newTVarIO (return [])
   gameroomRef <- newTVarIO Nothing
 
-  [sendAH, resignAH, sharpAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH, currentAH, prevBranchAH, nextBranchAH
-    ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH, toggleFullscreenAH]
+  [sendAH, resignAH, sharpAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH
+    ,currentAH, prevBranchAH, nextBranchAH
+    ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH, toggleFullscreenAH
+    ,copyMovelistAH]
        <- initKeyActions window buttonSet
 
   do
@@ -1016,10 +1055,16 @@ main = do
   
     register toggleFullscreenAH $ const $ readIORef fullscreen >>= \case
       False -> do
---        widgetHide menuBar
+        widgetHide menuBar
+        widgetHide statusLabel
+        widgetHide buttonGrid
+        widgetHide gameGrid
         windowFullscreen window
       True -> do
---        widgetShow menuBar
+        widgetShow menuBar
+        widgetShow statusLabel
+        widgetShow buttonGrid
+        widgetShow gameGrid
         windowUnfullscreen window
 
   trapMask <- mkTrapMask 1.6 3.2 1.5
@@ -1027,7 +1072,6 @@ main = do
   writeIORef globalEnv Env{..}
 
 ----------------------------------------------------------------
-
 
   do
     b <- dialogAddButton settingsDialog "Apply" ResponseAccept
@@ -1050,13 +1094,12 @@ main = do
         settingsSetCallback ls
         widgetHide settingsDialog
       _ -> return ()
-
+  
   -- this is on realize so that the prompt-username window is centred over the main window
   window `on` realize $ initialStuff
 
   windowSetIconFromFile window "images/2D/cs.png"
   windowMaximize window
-  -- windowFullscreen window
   widgetShowAll window
 
   -- user plays self (for testing)

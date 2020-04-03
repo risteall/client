@@ -1,6 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards #-}
+{-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards, TypeApplications #-}
 
 module Scrape where
 
@@ -134,4 +134,43 @@ getLiveGames url = do
           parseRating = head . mapMaybe readMaybe . words
           ([liveGid]:_) = mapMaybe (matchRegex (mkRegex "openGame.*\\('([[:digit:]]+)"))
                        [fromJust (lookup "href" attrs) | TagBranch "a" attrs _ <- universeTree tr]
+  return $ map f trs
+
+text t = [s | TagLeaf (TagText s) <- universeTree t]
+
+data RecentGameInfo = RecentGameInfo
+  {rgiNames :: Array Colour String
+  ,rgiRatings :: Array Colour Int
+  ,rgiWinner :: Colour
+  ,rgiRated :: Bool
+  ,rgiTimeControl :: TimeControl
+  ,rgiReason :: Reason
+  ,rgiMoveCount :: Int
+  ,rgiGid :: Int
+  } deriving Show
+
+getRecentGames :: IO [RecentGameInfo]
+getRecentGames = do
+  s <- getResponseBody =<< simpleHTTP (getRequest "http://arimaa.com/arimaa/gameroom/recentgames.cgi")
+  let table = [l | TagBranch "table" _ l <- universeTree $ parseTree s] !! 1
+      trs = drop 2 [l | TagBranch "tr" _ l <- table]
+      f tr = RecentGameInfo {rgiNames = colourArray [gn, sn]
+                            ,rgiRatings = colourArray [gr, sr]
+                            ,rgiWinner = fst $ fromJust $ find snd [(Gold, gw), (Silver, sw)]
+                            ,rgiRated = not (null r)
+                            ,rgiTimeControl = fromJust (parseTimeControl (filter (not . isSpace) tc))
+                            ,rgiReason = fromJust $ readReason $ head $ (filter (not . isSpace) (head (text reason)))
+                            ,rgiMoveCount = read @Int (head (text moves))
+                            ,rgiGid = gid
+                            }
+        where
+          [gold, board, silver, _, reason, moves, _, _time, _, _comments]
+            = [l | TagBranch "td" _ l <- tr]
+          g c = (name, head (mapMaybe (readMaybe @Int) (words r)), not (all isSpace (w1 ++ w2)))
+            where [w1, name, w2, r, _] = text c
+          [(gn, gr, gw), (sn, sr, sw)] = map g [gold, silver]
+          (r, [tc]) = partition (== "R") $ filter (not . all isSpace) $ text board
+          gid = head $ mapMaybe k $ map snd $ concat [a | TagBranch "a" a _ <- universeTree board]
+          k s | "openGame" `isInfixOf` s = readMaybe $ filter isDigit s
+              | otherwise = Nothing
   return $ map f trs

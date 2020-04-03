@@ -637,6 +637,8 @@ gameNetwork (params :: GameParams)
                    <$> stepper initialBlindMode eBlind
 
   eEscape <- fromAddHandler (get clearArrowsAH)
+
+  eCopy <- fromAddHandler (get copyMovelistAH)
   
   let defaultColour = find (isUser params !) [Gold, Silver]
 
@@ -847,6 +849,18 @@ gameNetwork (params :: GameParams)
   let f gs = printf "%s (%s)" (show (timeControl params)) (if rated params then "rated" else "unrated")
              ++ maybe "" (\(c,r) -> printf " | %s won (%s)" (show c) (show r)) (result gs)
     in onChanges $ labelSetText (get (gameLabel . widgets)) <$> (f <$> gameState)
+
+    -- TODO: move number, other notations, multiple moves
+  bCopy <- switchStepper $ fmap (maybe "" showGenMove) . Node.getMove . viewNode <$> sTree
+  let f s = clipboardGet selectionClipboard >>= flip clipboardSetText s
+    in reactimate $ f <$> (bCopy <@ eCopy)
+
+
+    -- do
+  --   c <- clipboardGet selectionClipboard
+  --   clipboardSetText c (replicate 50 'X')
+
+
 
 ----------------------------------------------------------------
 

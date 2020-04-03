@@ -51,11 +51,11 @@
                       <packing>
                         <property name="left_attach">0</property>
                         <property name="top_attach">2</property>
-                        <property name="height">9</property>
+                        <property name="height">8</property>
                       </packing>
                     </child>
                     <child>
-                      <object class="GtkGrid" id="grid2">
+                      <object class="GtkGrid" id="button-grid">
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
                         <child>
@@ -266,7 +266,7 @@
                       </packing>
                     </child>
                     <child>
-                      <object class="GtkGrid" id="grid4">
+                      <object class="GtkGrid" id="game-grid">
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
                         <property name="margin_top">5</property>
@@ -413,7 +413,7 @@
             <property name="visible">True</property>
             <property name="can_focus">False</property>
             <child>
-              <object class="GtkMenuItem" id="menuitem5">
+              <object class="GtkMenuItem" id="game-menu-item">
                 <property name="visible">True</property>
                 <property name="can_focus">False</property>
                 <property name="label" translatable="yes">_Game</property>
@@ -449,6 +449,14 @@
 		    <child>
                       <object class="GtkMenuItem" id="watch-games-item">
                         <property name="label">_Watch games</property>
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="use_underline">True</property>
+                      </object>
+                    </child>
+		    <child>
+                      <object class="GtkMenuItem" id="recent-games-item">
+                        <property name="label">_Recent games</property>
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
                         <property name="use_underline">True</property>
@@ -657,7 +665,5 @@
       </object>
     </child>
 
-
-    
   </object>
 </interface>

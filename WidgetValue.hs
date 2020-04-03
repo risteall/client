@@ -25,6 +25,8 @@ class WidgetClass b => WidgetValue a b | a -> b where
     entrySetActivatesDefault e True
     return (e, readMaybe <$> entryGetText e, entrySetText e . show)
 
+instance WidgetValue String Entry
+
 -- empty entry is Nothing
 instance WidgetValue (Maybe String) Entry where
   makeWidget = do
@@ -88,3 +90,15 @@ intWidget lo hi = do
          ,round <$> spinButtonGetValue b
          ,spinButtonSetValue b . fromIntegral
          )
+
+----------------------------------------------------------------
+
+labelledAccessor :: WidgetValue a w => String -> IO (HBox, IO (Maybe a), a -> IO ())
+labelledAccessor label = do
+  box <- hBoxNew False 5
+  l <- labelNew (Just label)
+  (w, get, set) <- makeWidget
+  containerAdd box l
+  containerAdd box w
+  return (box, get, set)
+
