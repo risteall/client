@@ -19,13 +19,15 @@ import Data.AppSettings
 
 class WidgetClass b => WidgetValue a b | a -> b where
   makeWidget :: IO (b, IO (Maybe a), a -> IO ())
-  default makeWidget :: (Read a, Show a) => IO (Entry, IO (Maybe a), a -> IO ())
-  makeWidget = do
-    e <- entryNew
-    entrySetActivatesDefault e True
-    return (e, readMaybe <$> entryGetText e, entrySetText e . show)
 
-instance WidgetValue String Entry
+defaultMakeWidget :: (Read a, Show a) => IO (Entry, IO (Maybe a), a -> IO ())
+defaultMakeWidget = do
+  e <- entryNew
+  entrySetActivatesDefault e True
+  return (e, readMaybe <$> entryGetText e, entrySetText e . show)
+
+instance WidgetValue String Entry where
+  makeWidget = defaultMakeWidget
 
 -- empty entry is Nothing
 instance WidgetValue (Maybe String) Entry where
@@ -64,12 +66,14 @@ maybeWidget = do
       set a
   return (box, get', set')
 
-instance WidgetValue Int Entry
+instance WidgetValue Int Entry where
+  makeWidget = defaultMakeWidget
 
 instance WidgetValue (Maybe Int) HBox where
   makeWidget = maybeWidget
 
-instance WidgetValue Double Entry
+instance WidgetValue Double Entry where
+  makeWidget = defaultMakeWidget
 
 enumWidget :: Eq a => [(a, String)] -> IO (HBox, IO (Maybe a), a -> IO ())
 enumWidget l = do

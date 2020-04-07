@@ -1,6 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds, TypeApplications #-}
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds, TypeApplications, DeriveTraversable, DeriveLift, TemplateHaskell #-}
 
 import Data.Array.IArray
 import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle)
@@ -28,12 +28,14 @@ import Control.Exception
 import Reactive.Banana hiding (split)
 import qualified Reactive.Banana as RB
 import Reactive.Banana.Frameworks
-import GHC.Exts
+import GHC.Exts(fromString)
 import Text.Printf
 import Data.Unique
 import Data.AppSettings
 import System.Environment
-import Control.Lens (_2)
+import Data.Foldable
+import Language.Haskell.TH.Syntax
+import Lens.Micro
 
 import Draw
 import qualified Protocol
@@ -48,12 +50,76 @@ import Sharp
 import WidgetValue
 import Settings
 import Misc
-
-#define LOCAL
+import Templates
 
 #ifndef LOCAL
 import Paths_nosteps
 #endif
+
+----------------------------------------------------------------
+
+deriving instance Read Modifier
+
+declareKeys
+  [("sendE", [], "s", "Send move", [|Just ((`onS` buttonActivated) . sendButton)|])
+  ,("resignE", [Gtk.Control], "r", "Resign", [|Just ((`onS` buttonActivated) . resignButton)|])
+  ,("sharpE", [], "x", "Run Sharp", [|Nothing|])
+  ,("planE", [], "space", "Enter plan move", [|Nothing|])
+  ,("clearE", [], "Escape", "Clear arrows", [|Nothing|])
+  ,("prevE", [], "Up", "Previous move", [|Nothing|])
+  ,("nextE", [], "Down", "Next move", [|Nothing|])
+  ,("startE", [Gtk.Control], "Up", "Go to game start", [|Nothing|])
+  ,("endE", [Gtk.Control], "Down", "Go to game end", [|Nothing|])
+  ,("currentE", [], "c", "Go to current game position", [|Nothing|])
+  ,("prevBranchE", [], "Left", "Previous variation", [|Nothing|])
+  ,("nextBranchE", [], "Right", "Next variation", [|Nothing|])
+  ,("deleteNodeE", [], "BackSpace", "Remove plan move", [|Nothing|])
+  ,("deleteLineE", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", [|Nothing|])
+  ,("deleteAllE", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", [|Nothing|])
+  ,("deleteFromHereE", [], "Delete", "Remove plans starting at current position", [|Nothing|])
+  ,("toggleSharpE", [], "p", "Pause and unpause Sharp", [|Nothing|])
+  ,("toggleFullscreenE", [], "F11", "Toggle fullscreen", [|Nothing|])
+  ,("copyMovelistE", [Gtk.Control], "c", "Copy movelist", [|Nothing|])
+  ,("dummyGameE", [Gtk.Control], "d", "Dummy game", [|Nothing|])
+  ]
+
+anyM :: (Foldable t, Monad m) => (a -> m Bool) -> t a -> m Bool
+anyM f = foldr g (return False)
+  where g x y = f x >>= \case
+          True -> return True
+          False -> y
+
+initKeyActions :: Widgets -> IO (Keys (AddHandler ()))
+initKeyActions widgets = do
+  l <- mapM (\(s,_,mf) -> (s,mf,) <$> newAddHandler) keys
+  forM_ l $ \(_, mf, (_, fire)) -> forM_ mf $ \f -> register (f widgets) fire
+  window widgets `on` keyPressEvent $ do
+    k <- eventKeyVal
+    m <- eventModifier
+    let
+      f (s, _, (_, fire)) = do
+        (m', k') <- getConf' s
+        if k == k' && elem m (permutations m')
+          then do {fire (); return True}
+          else return False
+    liftIO $ anyM f l
+  return $ fmap (\(_,_,(ah,_)) -> ah) l
+  
+----------------------------------------------------------------
+
+onS :: GObjectClass object => object -> Signal object (IO ()) -> AddHandler ()
+onS o s = AddHandler $ \h -> do
+  c <- Gtk.on o s (h ())
+  return $ signalDisconnect c
+
+onE :: GObjectClass object => object -> Signal object (EventM t Bool) -> EventM t (Maybe a) -> AddHandler a
+onE o s k = AddHandler $ \h -> do
+  c <- Gtk.on o s $ k >>= \case
+    Nothing -> return False
+    Just a -> do
+      liftIO $ h a
+      return True
+  return $ signalDisconnect c
 
 ----------------------------------------------------------------
 
@@ -79,52 +145,7 @@ setUsernameAndPassword u p = do
   atomically $ writeTVar (get gameroomRef) Nothing   -- bad: should logout
   getBotLadder
 
--- multiple keys for same action should be possible
-keyBindings :: [(Setting ([Modifier], KeyVal), String, Maybe (ButtonSet -> Button))]
-keyBindings = map (\(a,b,c,d,e) -> (Setting a (b, keyFromName (fromString c)), d, e))
-                  [("send-key", [], "s", "Send move", Just sendButton)
-                  ,("resign-key", [], "r", "Resign", Just resignButton)
-                  ,("sharp-key", [], "x", "Run Sharp", Nothing)
-                  ,("plan-key", [], "space", "Enter plan move", Nothing)
-                  ,("clear-key", [], "Escape", "Clear arrows", Nothing)
-                  ,("prev-key", [], "Up", "Previous move", Nothing)
-                  ,("next-key", [], "Down", "Next move", Nothing)
-                  ,("start-key", [Gtk.Control], "Up", "Go to game start", Nothing)
-                  ,("end-key", [Gtk.Control], "Down", "Go to game end", Nothing)
-                  ,("current-key", [], "c", "Go to current game position", Nothing)
-                  ,("prev-branch-key", [], "Left", "Previous variation", Nothing)
-                  ,("next-branch-key", [], "Right", "Next variation", Nothing)
-                  ,("delete-node-key", [], "BackSpace", "Remove plan move", Nothing)
-                  ,("delete-line-key", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", Nothing)
-                  ,("delete-all-key", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", Nothing)
-                  ,("delete-from-here-key", [], "Delete", "Remove plans starting at current position", Nothing)
-                  ,("toggle-sharp-key", [], "p", "Pause and unpause Sharp", Nothing)
-                  ,("toggle-fullscreen-key", [], "F11", "Toggle fullscreen", Nothing)
-                  ,("copy-movelist-key", [Gtk.Control], "c", "Copy movelist", Nothing)
-                  ]
-
-deriving instance Read Modifier
-
-anyM :: Monad m => [m Bool] -> m Bool
-anyM = foldr f (return False)
-  where f x y = x >>= \case
-          True -> return True
-          False -> y
-
-initKeyActions :: Window -> ButtonSet -> IO [AddHandler ()]
-initKeyActions w bs = do
-  l <- mapM (const newAddHandler) keyBindings
-  forM_ (zip l keyBindings) $ \((_, fire), (_, _, mb)) -> forM_ mb $ \b -> b bs `on` buttonActivated $ fire ()
-  w `on` keyPressEvent $ do
-    k <- eventKeyVal
-    m <- eventModifier
-    let f (_, fire) (s, _, _) = do
-          (m', k') <- getConf' s
-          if k == k' && elem m (permutations m')
-            then do {fire (); return True}
-            else return False
-    liftIO $ anyM $ zipWith f l keyBindings
-  return $ map fst l
+----------------------------------------------------------------
 
 ----------------------------------------------------------------
   
@@ -332,7 +353,7 @@ setServerGame gameInfo = handle (\(Protocol.ServerError s) -> alert s) $ do
                         }
               []
               (sendMessage requestChan nextId)
-              (Just <$> channelEvent responseChan)
+              (channelEvent responseChan)
               (do
                   e <- channelEvent updateChan
                   b <- accumB newGameState (flip updateGameState <$> e)
@@ -362,13 +383,13 @@ watchGame gid = handle (\(Protocol.ServerError s) -> alert s) $ do
   postGUIAsync
                    -- TODO: handle missing values
                    -- TODO: strip * from player names
-    $ newGame GameParams{names = colourArray $ map (\s -> fromJust (lookup s response)) ["wplayer", "bplayer"]
+    $ newGame' GameParams{names = colourArray $ map (\s -> fromJust (lookup s response)) ["wplayer", "bplayer"]
                         ,ratings = colourArray $ map (\s -> lookup s response >>= readMaybe) ["wrating", "brating"]
                         ,isUser = mapColourArray $ const False
                         ,timeControl = tc
                         ,rated = fromJust (lookup "rated" response) == "1"
                         }
-              [] (\_ -> return ()) (return Nothing)
+              [] (\_ -> return ())
               (do
                   e <- channelEvent updateChan
                   b <- accumB newGameState (flip updateGameState <$> e)
@@ -579,14 +600,14 @@ viewGame n killDialog = do
       killDialog
       let nodes = either error id $ expandGame (sgiTimeControl sgi) (map (second Just) (sgiMoves sgi))
           pos = Node.regularPosition $ if null nodes then Nothing else Just (last nodes)
-      newGame GameParams{names = sgiNames sgi
+      newGame' GameParams{names = sgiNames sgi
                         ,ratings = Just <$> sgiRatings sgi
                         ,isUser = mapColourArray (const False)
                         ,timeControl = sgiTimeControl sgi
                         ,rated = sgiRated sgi
                         }
               (foldr (\n f -> [Node (Node.SomeNode n) f]) [] nodes)
-              (\_ -> return ()) (return Nothing)
+              (\_ -> return ())
               (return (pure GameState{started = True, position = pos, result = Just $ sgiResult sgi},
                        never))
               (return ())
@@ -679,14 +700,26 @@ requestToUpdate (RequestResign c) = UpdateResult (flipColour c, Resignation)
 
 dummyGame :: TimeControl -> IO ()
 dummyGame tc = do
+  counter <- newIORef 0
   (ah, fire) <- newAddHandler
+  (responseAH, fireResponse) <- newAddHandler
   newGame GameParams{names = mapColourArray (const "me")
                     ,ratings = mapColourArray (const Nothing)
                     ,isUser = mapColourArray (const True)
                     ,timeControl = tc
                     ,rated = False
                     }
-          [] fire (return Nothing)
+          []
+          (\r -> do
+              fire r
+              n <- readIORef counter
+              modifyIORef' counter (+ 1)
+              forkIO $ do
+                threadDelay 1000000
+                postGUIAsync $ fireResponse n
+              return n
+          )
+          (fromAddHandler responseAH)
           (do
              e <- fromAddHandler ah
              let u = requestToUpdate <$> e
@@ -743,8 +776,8 @@ initialStuff = do
 
 initKeyList :: IO (ListStore (String, ([Modifier], KeyVal)))
 initKeyList = do
-  ls <- listStoreNew =<< mapM (\(setting, desc, _) -> (desc,) <$> getConf' setting) keyBindings
-  treeViewSetModel (get (keyTreeView . widgets)) ls
+  ls <- listStoreNew =<< mapM (\(setting, desc, _) -> (desc,) <$> getConf' setting) (toList keys)
+  treeViewSetModel (get (keyTreeView . widgets)) (Just ls)
 
   crt <- cellRendererTextNew
   cellLayoutPackStart (get (actionColumn . widgets)) crt False
@@ -779,7 +812,7 @@ settingsSetCallback ls = do
   l <- listStoreToList ls
   let c'' = foldl' (\c ((s,_,_),(_,mk)) -> setSetting c s mk)
                    c'
-                   $ zip keyBindings l
+                   $ zip (toList keys) l
 
   let f c = (getSetting' c username, getSetting' c password)
       (u, p) = f c''
@@ -795,17 +828,19 @@ dataFileName = return
 dataFileName = getDataFileName
 #endif
 
-main = do
+loadConfig = do
   conf <- (newTVarIO =<<) $ try (readSettings settingsPlace) >>= \case
     Right (c, _) -> return c
     Left (_ :: IOException) -> return Map.empty
 
-  (confAH, confFire) <- newAddHandler
+  (confE, confFire) <- newAddHandler
   let setConf c = do
         atomically $ writeTVar conf c
         confFire c
         saveSettings emptyDefaultConfig settingsPlace c
+  return (conf, setConf, confE)
 
+loadImages = do
   let imageFiles =
         [(TwoD, ["2D/" ++ (t : c : ".png") | c <- "gs", t <- "rcdhme"])
         ,(ThreeD, map ("3D/" ++)
@@ -824,18 +859,12 @@ main = do
                       ])
         ]
 
-  icons <- Map.fromList
+  Map.fromList
     <$> mapM (_2 (fmap (listArray ((Gold, 0), (Silver, length pieceInfo - 1)))
                     . mapM ((>>= imageSurfaceCreateFromPNG) . dataFileName . ("images/" ++))))
              imageFiles
 
-  initGUI
-
-  builder <- builderNew
-  builderAddFromFile builder =<< dataFileName "nosteps.glade"  -- TODO: don't hardcode filename
-  buttonSet <- getButtonSet builder
-  widgets@Widgets{..} <- getWidgets builder
-
+setupWidgets Widgets{setupGrid} = do
   setupIcons <- replicateM (length pieceInfo) drawingAreaNew
   setupLabels <- replicateM (length pieceInfo) $ labelNew (Nothing :: Maybe String)
 
@@ -844,9 +873,10 @@ main = do
 
   zipWithM_ (\i n -> gridAttach setupGrid i n 0 1 1) setupIcons [0..]
   zipWithM_ (\l n -> gridAttach setupGrid l n 1 1 1) setupLabels [0..]
+  
+  return (setupIcons, setupLabels)
 
-----------------------------------------------------------------
-
+settingWidgets Widgets{settingsGrid, colourGrid} conf = do
   generalAccessor <- do
     Gtk.set settingsGrid [containerBorderWidth := 5]
     gridSetColumnSpacing settingsGrid 10
@@ -877,61 +907,87 @@ main = do
     widgetShowAll colourGrid
     return acc
 
-  let (widgetsToConf, confToWidgets) = generalAccessor <> colourAccessor
+  return $ generalAccessor <> colourAccessor
 
-----------------------------------------------------------------
+blind Widgets{blindModeMenu} = do
+  first <- radioMenuItemNewWithLabel "Sighted"
+  rest <- mapM (radioMenuItemNewWithLabelFromWidget first) ["Blind", "Show friendly", "Show enemy"]
+  let l = [(True, True), (False, False), (True, False), (False, True)]
+  (ah, fire) <- newAddHandler
+  zipWithM_ (\item state -> do
+                containerAdd blindModeMenu item
+                item `on` checkMenuItemToggled $ do
+                  b <- checkMenuItemGetActive item
+                  when b $ fire state
+            )
+            (first : rest) l
+  return ah
 
-  (getBlindMode, blindModeAH) <- do
-    first <- radioMenuItemNewWithLabel "Sighted"
-    rest <- mapM (radioMenuItemNewWithLabelFromWidget first) ["Blind", "Show friendly", "Show enemy"]
-    let l = [(True, True), (False, False), (True, False), (False, True)]
-        f = do
-          x <- mapM checkMenuItemGetActive (first : rest)
-          return $ fromMaybe (True, True) $ snd <$> find fst (zip x l)
-    (ah, fire) <- newAddHandler
-    zipWithM_ (\item state -> do
-                  containerAdd blindModeMenu item
-                  item `on` checkMenuItemToggled $ do
-                    b <- checkMenuItemGetActive item
-                    when b $ fire state
-              )
-              (first : rest) l
-    return (f, ah)
+getEvents Widgets{boardCanvas, treeCanvas, flipBoard} Keys{..} setupIcons blindMode confE = do
+  let setupIconsE = map (\icon -> icon `onE` buttonPressEvent $ return (Just ())) setupIcons
+
+  (tick, tickFire) <- newAddHandler
+  timeoutAdd (True <$ tickFire ()) (div 1000 tickFrequency)
+
+  (leftPress, leftPressFire) <- newAddHandler
+  (rightPress, rightPressFire) <- newAddHandler
+
+  boardCanvas `on` buttonPressEvent $ do
+    b <- eventButton
+    c <- eventCoordinates
+    liftIO $ do
+      (sq, x) <- boardCoordinates' boardCanvas c
+      if inRange boardRange sq
+        then do
+          case b of
+            LeftButton -> leftPressFire (sq, x)
+            RightButton -> rightPressFire sq
+          return True
+        else return False
+
+  let
+    release = boardCanvas `onE` buttonReleaseEvent $ do
+      b <- eventButton
+      c <- eventCoordinates
+      if b == LeftButton
+        then liftIO $ Just <$> boardCoordinates boardCanvas c
+        else return Nothing
+
+    motion = boardCanvas `onE` motionNotifyEvent $ do
+      c <- eventCoordinates
+      sq <- liftIO $ boardCoordinates boardCanvas c
+      if inRange boardRange sq
+        then return (Just sq)
+        else return Nothing
+
+    treePress = treeCanvas `onE` buttonPressEvent $ Just <$> eventCoordinates
+
+    flipE = flipBoard `onS` menuItemActivated
+
+  (newGameE, newGameFire) <- newAddHandler
   
-  widgetAddEvents boardCanvas [ButtonPressMask, ButtonReleaseMask, Button1MotionMask]
-  widgetAddEvents window [KeyPressMask]
-  widgetAddEvents treeCanvas [ButtonPressMask]
+  return (Events{..}, newGameFire)
 
-  -- command line
-  let layoutHack = True
+fullscreenKey Widgets{..} toggleFullscreenE = do
+  fullscreen <- newIORef False
 
-  when layoutHack $ do
-    sizeRef <- newIORef Nothing
+  void $ register toggleFullscreenE $ const $ readIORef fullscreen >>= \case
+    False -> do
+      widgetHide menuBar
+      widgetHide statusLabel
+      widgetHide buttonGrid
+      widgetHide gameGrid
+      windowFullscreen window
+      writeIORef fullscreen True
+    True -> do
+      widgetShow menuBar
+      widgetShow statusLabel
+      widgetShow buttonGrid
+      widgetShow gameGrid
+      windowUnfullscreen window
+      writeIORef fullscreen False
 
-    window `on` configureEvent $ do
-      s <- eventSize
-      liftIO $ readIORef sizeRef >>= \case
-        Just s' | s' == s -> return ()
-        _ -> do
-          Gtk.set boardCanvas [widgetWidthRequest := 150
-                              ,widgetHeightRequest := 150
-                              ,widgetExpand := True
-                              ]
-          Gtk.set topClock [widgetHExpand := False]
-          writeIORef sizeRef (Just s)
-
-      return False
-
-    boardCanvas `on` sizeAllocate $ \(Rectangle _ _ x y) -> postGUIAsync $ do
-      let z = min x y
-      Gtk.set boardCanvas [widgetWidthRequest := z
-                          ,widgetHeightRequest := z
-                          ,widgetExpand := False
-                          ]
-      Gtk.set topClock [widgetHExpand := True]
-    
-    return ()
-
+drawFuncs Widgets{boardCanvas, captureCanvas, treeCanvas} setupIcons conf = do
   let makeDraw :: WidgetClass w => w -> IO ((w -> Render ()) -> IO ())
       makeDraw w = do
         drawRef <- newIORef $ return ()
@@ -954,63 +1010,9 @@ main = do
 
     liftIO (readTVarIO conf) >>= drawEmptyBoard
 
-  (leftPressAH, leftPressFire) <- newAddHandler
-  (rightPressAH, rightPressFire) <- newAddHandler
-  (motionAH, motionFire) <- newAddHandler
-  (releaseAH, releaseFire) <- newAddHandler
-  (flipAH, flipFire) <- newAddHandler
+  return (setDrawBoard, setDrawSetupIcons, setDrawCapture, setDrawTree)
 
-  setupIconAH <- forM setupIcons $ \icon -> do
-    (ah, fire) <- newAddHandler
-    icon `on` buttonPressEvent $ do {liftIO $ fire (); return True}
-    return ah
-
-  (tickAH, tickFire) <- newAddHandler
-  timeoutAdd (True <$ tickFire ()) (div 1000 tickFrequency)
-
-----------------------------------------------------------------
-
-  boardCanvas `on` buttonPressEvent $ do
-    b <- eventButton
-    c <- eventCoordinates
-    liftIO $ do
-      (sq, x) <- boardCoordinates' boardCanvas c
-      if inRange boardRange sq
-        then do
-          case b of
-            LeftButton -> leftPressFire (sq, x)
-            RightButton -> rightPressFire sq
-          return True
-        else return False
-
-  boardCanvas `on` buttonReleaseEvent $ do
-    b <- eventButton
-    c <- eventCoordinates
-    if b == LeftButton
-      then liftIO $ do
-        boardCoordinates boardCanvas c >>= releaseFire
-        return True
-      else return False
-
-  boardCanvas `on` motionNotifyEvent $ do
-    c <- eventCoordinates
-    liftIO $ do
-      sq <- boardCoordinates boardCanvas c
-      if inRange boardRange sq
-        then do
-          motionFire sq
-          return True
-        else return False
-
-  (treePressAH, treePressFire) <- newAddHandler
-
-  treeCanvas `on` buttonPressEvent $ do
-    c <- eventCoordinates
-    liftIO $ treePressFire c
-    return True
-
-  flipBoard `on` menuItemActivated $ flipFire ()
-
+extraHandlers Widgets{..} = do
   window `on` deleteEvent $ do
     liftIO $ do
       mainQuit
@@ -1026,62 +1028,17 @@ main = do
   viewGameItem `on` menuItemActivated $ viewGameCallback
   playBotItem `on` menuItemActivated $ playBotCallback
 
-  widgetGrabDefault =<< dialogAddButton settingsDialog "OK" ResponseOk
-
-----------------------------------------------------------------
-
-  killGameRef <- newIORef (return ())
-  statusStack <- newTVarIO []
-
-  myGames <- newTVarIO []
-  openGames <- newTVarIO []
-  liveGames <- newTVarIO []
-  postalGames <- newTVarIO []
-  botLadderBotsRef <- newTVarIO (return [])
-  gameroomRef <- newTVarIO Nothing
-
-  [sendAH, resignAH, sharpAH, planAH, clearArrowsAH, prevAH, nextAH, startAH, endAH
-    ,currentAH, prevBranchAH, nextBranchAH
-    ,deleteNodeAH, deleteLineAH, deleteAllAH, deleteFromHereAH, toggleSharpAH, toggleFullscreenAH
-    ,copyMovelistAH]
-       <- initKeyActions window buttonSet
-
-  do
-    fullscreen <- newIORef False
-    window `on` windowStateEvent $ do
-      state <- eventWindowState
-      liftIO $ writeIORef fullscreen (elem WindowStateFullscreen state)
-      return True
-  
-    register toggleFullscreenAH $ const $ readIORef fullscreen >>= \case
-      False -> do
-        widgetHide menuBar
-        widgetHide statusLabel
-        widgetHide buttonGrid
-        widgetHide gameGrid
-        windowFullscreen window
-      True -> do
-        widgetShow menuBar
-        widgetShow statusLabel
-        widgetShow buttonGrid
-        widgetShow gameGrid
-        windowUnfullscreen window
-
-  trapMask <- mkTrapMask 1.6 3.2 1.5
-
-  writeIORef globalEnv Env{..}
-
-----------------------------------------------------------------
-
   do
     b <- dialogAddButton settingsDialog "Apply" ResponseAccept
     boxReorderChild dialogActionArea b 0
+
+  widgetGrabDefault =<< dialogAddButton settingsDialog "OK" ResponseOk
 
   do
     ls <- initKeyList
 
     settingsItem `on` menuItemActivated $ do
-      readTVarIO conf >>= confToWidgets
+      readTVarIO (get conf) >>= get confToWidgets
       windowPresent settingsDialog
 
     settingsDialog `on` deleteEvent $ do
@@ -1098,13 +1055,92 @@ main = do
   -- this is on realize so that the prompt-username window is centred over the main window
   window `on` realize $ initialStuff
 
-  windowSetIconFromFile window "images/2D/cs.png"
+layoutHack Widgets{window, boardCanvas, topClock} = do
+  sizeRef <- newIORef Nothing
+
+  window `on` configureEvent $ do
+    s <- eventSize
+    liftIO $ readIORef sizeRef >>= \case
+      Just s' | s' == s -> return ()
+      _ -> do
+        Gtk.set boardCanvas [widgetWidthRequest := 150
+                            ,widgetHeightRequest := 150
+                            ,widgetExpand := True
+                            ]
+        Gtk.set topClock [widgetHExpand := False]
+        writeIORef sizeRef (Just s)
+
+    return False
+
+  boardCanvas `on` sizeAllocate $ \(Rectangle _ _ x y) -> postGUIAsync $ do
+    let z = min x y
+    Gtk.set boardCanvas [widgetWidthRequest := z
+                        ,widgetHeightRequest := z
+                        ,widgetExpand := False
+                        ]
+    Gtk.set topClock [widgetHExpand := True]
+
+  return ()
+  
+----------------------------------------------------------------
+
+main = do
+  (conf, setConf, confE) <- loadConfig
+  icons <- loadImages
+
+  initGUI
+
+  builder <- builderNew
+  builderAddFromFile builder =<< dataFileName "nosteps.glade"
+  widgets@Widgets{..} <- getWidgets builder
+
+  (setupIcons, setupLabels) <- setupWidgets widgets
+  (widgetsToConf, confToWidgets) <- settingWidgets widgets conf
+
+  blindMode <- blind widgets
+
+  widgetAddEvents boardCanvas [ButtonPressMask, ButtonReleaseMask, Button1MotionMask]
+  widgetAddEvents window [KeyPressMask]
+  widgetAddEvents treeCanvas [ButtonPressMask]
+
+  keys@Keys{toggleFullscreenE, dummyGameE} <- initKeyActions widgets
+
+  (events, newGameFire) <- getEvents widgets keys setupIcons blindMode confE
+
+  fullscreenKey widgets toggleFullscreenE
+  register dummyGameE $ \_ -> dummyGame (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
+
+  (setDrawBoard, setDrawSetupIcons, setDrawCapture, setDrawTree) <-
+    drawFuncs widgets setupIcons conf
+
+  statusStack <- newTVarIO []
+
+  myGames <- newTVarIO []
+  openGames <- newTVarIO []
+  liveGames <- newTVarIO []
+  postalGames <- newTVarIO []
+  botLadderBotsRef <- newTVarIO (return [])
+  gameroomRef <- newTVarIO Nothing
+
+  trapMask <- mkTrapMask 1.6 3.2 1.5
+
+  writeIORef globalEnv Env{..}
+
+----------------------------------------------------------------
+
+  extraHandlers widgets
+
+  -- command line
+  when True $ layoutHack widgets
+
+  network <- compile (network events)
+  writeIORef newGameRef $ \g -> do
+    actuate network
+    newGameFire g
+
+  windowSetIconFromFile window =<< dataFileName "images/2D/cs.png"
   windowMaximize window
   widgetShowAll window
-
-  -- user plays self (for testing)
-  args <- getArgs
-  when (not (null args)) $ dummyGame (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
 
   mainGUI
 

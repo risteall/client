@@ -302,7 +302,7 @@ showGenMove :: GenMove -> String
 showGenMove (Left setup) = intercalate " " $ map (\(sq, piece) -> pieceToChar piece : squareToString sq) setup
 showGenMove (Right move) = show move
 
-data Position = Position {posBoard :: Board, posDepth :: Int, posHistory :: [(Colour, Board)]}
+data Position = Position {posBoard :: Board, posDepth :: Int, posHistory :: [(Colour, Board)]} deriving Show
 
 instance Eq Position where
   Position b1 n1 h1 == Position b2 n2 h2 = b1 == b2 && h1 == h2 && mod n1 2 == mod n2 2

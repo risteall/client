@@ -23,12 +23,6 @@ import Base
 import Templates
 import Misc
 
-data ButtonSet = ButtonSet
-  {sendButton, resignButton :: Button
-  }
-
-mkWidgetGetter ''ButtonSet "getButtonSet"
-
 data Widgets = Widgets
   {window :: Window
   ,boardCanvas, captureCanvas, treeCanvas :: DrawingArea
@@ -47,28 +41,19 @@ data Widgets = Widgets
   ,gameMenu :: Menu
   ,gameMenuItem :: MenuItem
   ,buttonGrid, gameGrid :: Grid
+  ,sendButton, resignButton :: Button
   }
 
 mkWidgetGetter ''Widgets "getWidgets"
 
 data Env = Env
-  {buttonSet :: ButtonSet
-  ,widgets :: Widgets
+  {widgets :: Widgets
   ,icons :: Map.Map PieceSet (Array (Colour, Int) Surface)
   ,setupLabels :: [Label]
-  ,leftPressAH :: AddHandler (Square, (Double, Double))
-  ,rightPressAH :: AddHandler Square
-  ,releaseAH :: AddHandler Square
-  ,motionAH :: AddHandler Square
-  ,flipAH :: AddHandler ()
-  ,tickAH :: AddHandler ()
-  ,setupIconAH :: [AddHandler ()]
-  ,killGameRef :: IORef (IO ())
   ,setDrawBoard :: (DrawingArea -> Render ()) -> IO ()
   ,setDrawSetupIcons :: [(DrawingArea -> Render ()) -> IO ()]
   ,setDrawCapture :: (DrawingArea -> Render ()) -> IO ()
   ,setDrawTree :: (DrawingArea -> Render ()) -> IO ()
-  ,blindModeAH :: AddHandler (Bool, Bool)
   ,botLadderBotsRef :: TVar (IO [BotLadderBot])
   ,statusStack :: TVar [(Unique, String)]
   ,myGames :: TVar [Protocol.GameInfo]
@@ -77,31 +62,10 @@ data Env = Env
   ,postalGames :: TVar [LiveGameInfo]
   ,conf :: TVar Conf
   ,gameroomRef :: TVar (Maybe Gameroom)
-  ,treePressAH :: AddHandler (Double, Double)
-  ,getBlindMode :: IO (Bool, Bool)
-  ,sendAH :: AddHandler ()
-  ,resignAH :: AddHandler ()
-  ,sharpAH :: AddHandler ()
-  ,planAH :: AddHandler ()
-  ,clearArrowsAH :: AddHandler ()
-  ,prevAH :: AddHandler ()
-  ,nextAH :: AddHandler ()
-  ,startAH :: AddHandler ()
-  ,endAH :: AddHandler ()
-  ,currentAH :: AddHandler ()
-  ,deleteNodeAH :: AddHandler ()
-  ,deleteLineAH :: AddHandler ()
-  ,deleteAllAH :: AddHandler ()
-  ,prevBranchAH :: AddHandler ()
-  ,nextBranchAH :: AddHandler ()
-  ,deleteFromHereAH :: AddHandler ()
   ,setConf :: Conf -> IO ()
-  ,confAH :: AddHandler Conf
-  ,toggleSharpAH :: AddHandler ()
   ,widgetsToConf :: IO (Conf -> Conf)
   ,confToWidgets :: Conf -> IO ()
   ,trapMask :: Surface
-  ,copyMovelistAH :: AddHandler ()
   }
 
 globalEnv :: IORef Env

@@ -1,9 +1,15 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, GADTs, DeriveFunctor #-}
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, GADTs, DeriveFunctor, TypeApplications, TemplateHaskell #-}
 
 
-module EventNetwork where
+module EventNetwork
+  (Request(..), Update(..)
+  ,GameState(..), newGameState, updateGameState
+  ,tickFrequency
+  ,Events(..)
+  ,GameParams(..), network, newGameRef, newGame, newGame'
+  ) where
 
 import Control.DeepSeq
 import Reactive.Banana hiding (split)
@@ -33,6 +39,8 @@ import System.Process
 import Data.Functor.Identity
 import System.IO.Unsafe
 import Colour
+import qualified Rank2
+import qualified Rank2.TH
 
 import Env
 import Draw
@@ -44,28 +52,7 @@ import Misc
 import qualified Node
 import Sharp
 import Settings
-
-bConf :: MomentIO (Behavior Conf)
-bConf = do
-  c <- liftIO $ readTVarIO (get conf)
-  e <- fromAddHandler (get confAH)
-  stepper c e
-
--- setConf :: Settings.Conf -> IO ()
--- setConf c = join $ atomically $ get setConf' c
-
-----------------------------------------------------------------
-
--- checkButtonBehavior :: CheckButton -> MomentIO (Behavior Bool)
--- checkButtonBehavior b = do
---   (a, ah) <- liftIO $ do
---     (ah, fire) <- newAddHandler
---     b `on` toggled $ toggleButtonGetActive b >>= fire
---     a <- toggleButtonGetActive b
---     return (a, ah)
---   fromChanges a ah
-
-----------------------------------------------------------------
+import Shadow
 
 -- press and motion are filtered to be within the board before this is called; release, not
 arrows :: Behavior (Array Colour Bool)
@@ -172,7 +159,7 @@ data GameState = GameState
   {started :: Bool
   ,position :: Position
   ,result :: Maybe (Colour, Reason)
-  }
+  } deriving Show
 
 newGameState = GameState{started = False, position = newPosition, result = Nothing}
 
@@ -347,35 +334,21 @@ treeAccum init pures impures = mdo
 
 ----------------------------------------------------------------
 
-treeNetwork :: Forest Node.SomeNode
-            -> [Int]
-            -> Event Node.SomeNode
-            -> Event (GameTree Node.SomeNode -> MomentIO (GameTree Node.SomeNode, Maybe SharpProcess))
-            -> Event ()
-            -> Behavior Bool
-            -> Behavior Bool
-            -> Event ()
-            -> Event ()
-            -> MomentIO (Stepper (GameTree Node.SomeNode), Event ())
-treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eInput eSecond = mdo
-  eStart <- fromAddHandler (get startAH)
-  ePrevNode <- fromAddHandler (get prevAH)
-  eCurrent <- fromAddHandler (get currentAH)
-  eNextNode <- fromAddHandler (get nextAH)
-  eEnd <- fromAddHandler (get endAH)
-  ePrevBranch <- fromAddHandler (get prevBranchAH)
-  eNextBranch <- fromAddHandler (get nextBranchAH)
-  eDeleteNode <- fromAddHandler (get deleteNodeAH)
-  eDeleteLine <- fromAddHandler (get deleteLineAH)
-  eDeleteAll <- fromAddHandler (get deleteAllAH)
-  eDeleteFromHere <- fromAddHandler (get deleteFromHereAH)
-  eMouse <- fromAddHandler (get treePressAH)
-  eToggleSharp <- fromAddHandler (get toggleSharpAH)
-
-  let eTreeMove = treeMove <$> killPlans <*> haveInput <*> behavior sTree <@> eMove
-  let initTree = mkGameTree initialTree initialGamePos (take 2 initialGamePos)
-
+treeNetwork
+  :: Events Event
+  -> Event (GameTree Node.SomeNode)
+  -> Event Node.SomeNode
+  -> Event (GameTree Node.SomeNode -> MomentIO (GameTree Node.SomeNode, Maybe SharpProcess))
+  -> Event ()
+  -> Behavior Bool
+  -> Event ()
+  -> Behavior Bool
+  -> Event ()
+  -> MomentIO (Behavior (GameTree Node.SomeNode), Event (Maybe Node.SomeNode))
+treeNetwork events eInitialTree eMove ePlan eSharp killPlans eInput haveInput eSecond = mdo
   let
+    eTreeMove = treeMove <$> killPlans <*> haveInput <*> behavior sTree <@> eMove
+
     eInput' = (f <$> behavior sTree) <@ eInput
       where
         f :: GameTree Node.SomeNode -> [SharpProcess]
@@ -386,16 +359,16 @@ treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eI
           | otherwise = []
   
 --  (eTree, bTree) <- initAccum initTree
-  let pures = unions [(\gt -> select (if null (viewPos gt) then [] else init (viewPos gt)) gt) <$ ePrevNode
-                     ,(\gt -> select (take (length (viewPos gt) + 1) (pathEnd gt)) gt) <$ eNextNode
-                     ,(\gt -> select (if length (viewPos gt) <= 2 then [] else take 2 (viewPos gt)) gt) <$ eStart
-                     ,(\gt -> select (pathEnd gt) gt) <$ eEnd
-                     ,(\gt -> select (currentPos gt) gt) <$ eCurrent
-                     ,prevBranch <$ ePrevBranch
-                     ,nextBranch <$ eNextBranch
+  let pures = unions [const <$> eInitialTree
+                     ,(\gt -> select (if null (viewPos gt) then [] else init (viewPos gt)) gt) <$ prevE events
+                     ,(\gt -> select (take (length (viewPos gt) + 1) (pathEnd gt)) gt) <$ nextE events
+                     ,(\gt -> select (if length (viewPos gt) <= 2 then [] else take 2 (viewPos gt)) gt) <$ startE events
+                     ,(\gt -> select (pathEnd gt) gt) <$ endE events
+                     ,(\gt -> select (currentPos gt) gt) <$ currentE events
+                     ,prevBranch <$ prevBranchE events
+                     ,nextBranch <$ nextBranchE events
                      ,select <$> eSelect
                      ,const . (\(a,_,_) -> a) <$> eTreeMove
---                     ,treePlan <$> ePlan
                      ]
 
   (sTree, eDel, ePauseAndToggle) <-
@@ -410,31 +383,32 @@ treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eI
 
       fromPause e = (fmap (second ((,[]) . maybeToList)) .) <$> e
       fromToggle e = (fmap (second (([],) . maybeToList)) .) <$> e
-    in treeAccum initTree
+    in treeAccum (mkGameTree [] [] [])
          (foldr (unionWith (y (++))) never
            ((((, []) .) <$> pures)
-           : [deleteViewNode <$ eDeleteNode
-             ,deleteLine <$ eDeleteLine
-             ,deleteAll <$ eDeleteAll
-             ,deleteFromHere <$ eDeleteFromHere
+           : [deleteViewNode <$ deleteNodeE events
+             ,deleteLine <$ deleteLineE events
+             ,deleteAll <$ deleteAllE events
+             ,deleteFromHere <$ deleteFromHereE events
              ]))
          (foldr (unionWith (z (\(a1, b1) (a2, b2) -> (a1++a2, b1++b2)))) never
            [fromPause ePlan
            ,fromPause (Node.addSharp (unionWith (++) (fst <$> ePauseAndToggle) eInput') (snd <$> ePauseAndToggle) eSecond <$ eSharp)
-           ,fromToggle (Node.toggleSharp <$ eToggleSharp)
+           ,fromToggle (Node.toggleSharp <$ toggleSharpE events)
            ])
 
   reactimate $ mapM_ Node.killNode <$> unionWith (++) eDel ((\(_,_,a) -> a) <$> eTreeMove)
 
   let
     sTreePlaces = (\gt -> (gt, placeTree (tree gt) (currentPos gt))) <$> sTree   -- combined because used together in drawTree
-    eSelect = filterJust $ (\(gt, (offsets, width)) -> mouseNode (pathEnd gt) offsets width) <$> behavior sTreePlaces <@> eMouse
+    eSelect = filterJust $ (\(gt, (offsets, width)) -> mouseNode (pathEnd gt) offsets width) <$> behavior sTreePlaces <@> treePress events
     eClear = foldr (unionWith const) never
-                   [eStart, eEnd, eCurrent, ePrevNode, eNextNode, ePrevBranch, eNextBranch, eDeleteNode, eDeleteLine
+                   [void eInitialTree
+                   ,startE events, endE events, currentE events, prevE events, nextE events, prevBranchE events, nextBranchE events, deleteNodeE events, deleteLineE events
                    ,void eSelect, void ePlan
                    ,void eSharp  -- should be filtered somewhat
                    ,void $ filterE (\(_,a,_) -> a) eTreeMove
-                   ,void $ whenE ((\gt -> not (viewPos gt `isPrefixOf` currentPos gt)) <$> behavior sTree) eDeleteAll
+                   ,void $ whenE ((\gt -> not (viewPos gt `isPrefixOf` currentPos gt)) <$> behavior sTree) (deleteAllE events)
                    ]
 
   bDrawTree <- switchStepper $ (\(gt, (offsets, _)) -> drawTree gt offsets) <$> sTreePlaces
@@ -453,20 +427,18 @@ treeNetwork initialTree initialGamePos eMove ePlan eSharp killPlans haveInput eI
       when (y > v + p - 2 * treeYGap) $ Gtk.set a [adjustmentValue := y - p + 2 * treeYGap]
     ) <$> event sTree
 
-  return (sTree, eClear)
-  
+  return (behavior sTree, viewNode <$> event sTree)  -- returned event stream fires too often
+
 ----------------------------------------------------------------
 
 tickFrequency = 10 :: Int
 
-onChanges b = mdo
-  valueBLater b >>= liftIOLater
-  reactimate' =<< changes b
---onChanges = (>>= reactimate') . changes
+-- onChanges b = do
+--   valueBLater b >>= liftIOLater
+--   reactimate' =<< changes b
+onChanges = (>>= reactimate') . changes
 
 ----------------------------------------------------------------
-
---default(String, Int)
 
 flipSquare :: Square -> Square
 flipSquare (x, y) = (boardWidth - 1 - x, boardHeight - 1 - y)
@@ -479,6 +451,13 @@ data GameParams = GameParams
   ,timeControl :: TimeControl
   ,rated :: Bool
   }
+
+emptyGameParams :: GameParams
+emptyGameParams = GameParams (colourArray (repeat ""))
+                             (colourArray (repeat Nothing))
+                             (colourArray (repeat False))
+                             (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
+                             False
 
 buttonAction :: Button -> Event () -> Behavior (Maybe a) -> MomentIO (Event a)
 buttonAction b e x = do
@@ -514,20 +493,21 @@ augmentTimeUsed user minDiff (t, diff) | t == 0 = 0
                                        | otherwise = t + fromMaybe 0 (liftA2 (-) diff minDiff)
                                                        + if user then 2 else 0
 
-timeUsed :: GameParams
+timeUsed :: forall m. MonadMoment m
+         => GameParams
          -> Colour
          -> Behavior (Maybe Int)
          -> Behavior Bool
          -> Behavior Bool
          -> Event Update
          -> Event ()
-         -> MomentIO (Behavior Int)
+         -> m (Behavior Int)
 timeUsed params player bMinDiff clocksRun isDran eUpdate eTick
     = fmap (liftA2 (augmentTimeUsed (isUser params ! player))
                    bMinDiff)
            timeUsed'
   where
-    timeUsed' :: MomentIO (Behavior (Int, Maybe Int))
+    timeUsed' :: m (Behavior (Int, Maybe Int))
     timeUsed' = (fmap . fmap) (first (`div` tickFrequency))
                               $ accumB (0, Nothing) $ unions [whenE ((&&) <$> clocksRun <*> isDran) $ first (+1) <$ eTick
                                                              ,const <$> filterJust (f <$> isDran <@> eUpdate)
@@ -537,7 +517,7 @@ timeUsed params player bMinDiff clocksRun isDran eUpdate eTick
         f _ UpdateUsed{playerUsed = Just (c, t), timeDiff} | c == player = Just (tickFrequency * t, timeDiff)
         f _ _ = Nothing
 
-gameTimeUsed :: GameParams -> Behavior (Maybe Int) -> Behavior Bool -> Event Update -> Event () -> MomentIO (Behavior Int)
+gameTimeUsed :: MonadMoment m => GameParams -> Behavior (Maybe Int) -> Behavior Bool -> Event Update -> Event () -> m (Behavior Int)
 gameTimeUsed params bMinDiff clocksRun eUpdate eTick
     = fmap (liftA2 (augmentTimeUsed (or (isUser params)))
                    bMinDiff) gameTimeUsed'
@@ -557,6 +537,9 @@ data Clocks = Clocks
   ,usedLabel :: String
   }
 
+newClocks :: Clocks
+newClocks = Clocks 0 0 "" ""
+
 mkClocks :: TimeControl -> Bool -> Int -> Int -> Clocks
 mkClocks tc run state used
     = Clocks{state, used
@@ -567,12 +550,14 @@ mkClocks tc run state used
     clock = timeAvailable tc state - used
     extra = state + increment tc - timeAvailable tc state
 
-clocks :: GameParams
-       -> Behavior GameState
-       -> Event Update
-       -> Event ()
-       -> MomentIO (Colour -> MomentIO (Behavior Clocks), Behavior String)
-clocks params gameState eUpdate eTick = do
+-- forall m so that it can be used inside execute (no reactimate)
+clocks :: forall m. MonadMoment m
+  => Behavior GameState
+  -> Event Update
+  -> Event ()
+  -> GameParams
+  -> m (Colour -> m (Behavior Clocks), Behavior String)
+clocks gameState eUpdate eTick params = do
   let
     eDiff = filterJust (f <$> eUpdate)
       where f UpdateUsed{timeDiff} = timeDiff
@@ -585,7 +570,7 @@ clocks params gameState eUpdate eTick = do
     isDran player = ((== player) . posToMove . position) <$> gameState
     clocksRun = (\gs -> started gs && isNothing (result gs)) <$> gameState
 
-    clockState :: Colour -> MomentIO (Behavior Int)
+    clockState :: Colour -> m (Behavior Int)
     clockState player = accumB (initialReserve (timeControl params))
                                $ filterJust (f <$> isDran player <@> eUpdate)
       where
@@ -607,293 +592,407 @@ clocks params gameState eUpdate eTick = do
                             (clockState player)
                             (timeUsed params player bMinDiff clocksRun (isDran player) eUpdate eTick),
           gameLabel <$> gUsed)
-    
--- problem?: redundancy between gameState and tree
-gameNetwork (params :: GameParams)
-            (initialTree :: Forest Node.SomeNode)
-            (initialGamePos :: [Int])
-            (requestFunc :: Request -> IO a)
-            (eResponse :: Maybe (Event a))
-            (gameState :: Behavior GameState)   -- gameState and eUpdate passed separately to allow the caller the possibility of
-            (eUpdate :: Event Update)           --                        choosing how to handle legality checking
-            (flipped :: Behavior Bool)
-    = mdo
-  bConf' <- bConf
-  
-  eLeft <- fromAddHandler (get leftPressAH)
-  eRight <- fromAddHandler (get rightPressAH)
-  eRelease <- fromAddHandler (get releaseAH)
-  eMotion <- fromAddHandler (get motionAH)
-  eSend <- fromAddHandler (get sendAH)
-  ePlan <- fromAddHandler (get planAH)
-  eTick <- fromAddHandler (get tickAH)
-  eSetupIcon <- mapM fromAddHandler (get setupIconAH)
-  eResign <- fromAddHandler (get resignAH)
-  eSharp <- fromAddHandler (get sharpAH)
 
-  eBlind <- fromAddHandler (get blindModeAH)
-  initialBlindMode <- liftIO $ get getBlindMode
-  visible <- fmap (\(seeFriendly, seeEnemy) -> mapColourArray (\c -> if isUser params ! c then seeFriendly else seeEnemy))
-                   <$> stepper initialBlindMode eBlind
+--------------------------------------------------------------------------------------------------------------------------------
 
-  eEscape <- fromAddHandler (get clearArrowsAH)
+reactimateSwitch :: Event (Behavior (IO ())) -> MomentIO ()
+reactimateSwitch = switchB (pure undefined) >=> changes >=> reactimate'
 
-  eCopy <- fromAddHandler (get copyMovelistAH)
-  
-  let defaultColour = find (isUser params !) [Gold, Silver]
+data NewGame = forall a. Eq a => NewGame
+  {params :: GameParams
+  ,initialTree :: Forest Node.SomeNode
+  ,request :: Either (Request -> IO ()) (Request -> IO a, MomentIO (Event a))
+  ,updates :: MomentIO (Behavior GameState, Event Update)
+  ,cleanup :: IO ()
+  }
 
-  (eRequestSent, fireRequestSent) <- newEvent
+--------------------------------------------------------------------------------------------------------------------------------
 
-  let request x = do
-        y <- requestFunc x
-        fireRequestSent y
-        return y
+nextMove
+  :: Behavior (Array Colour Bool)
+  -> Behavior Position
+  -> Behavior ShadowBoard
+  -> Behavior (Maybe MoveSet)
+  -> MomentIO (Behavior (Maybe (GenMove, Position)))
+nextMove visible view shadow bMoveSet = do
+  let
+    f :: Position -> Maybe MoveSet -> ShadowBoard -> Array Colour Bool -> (String, Maybe (GenMove, Position))
+    f pos mms sb v
+      | posSetupPhase pos && fullShadow sb
+        = g $ Left [(sq, piece) | (sq, Just (piece, _)) <- assocs (realiseShadow (posToMove pos) sb)]
+      | not (posSetupPhase pos)
+      , Just ms <- mms
+        = case currentMove ms of
+           Nothing -> ("Move is ambiguous", Nothing)
+           Just m -> g (Right m)
+      | otherwise = ("", Nothing)
+      where g move = either (\s -> ("<span foreground=\"red\">Illegal move (" ++ s ++ ")</span>", Nothing))
+                            (\pos' -> (either (const "") (\m -> if (v ! posToMove pos) then show m else "[Move hidden]") move,
+                                       Just (move, pos')))
+                            $ playGenMove pos move
+    b = f <$> view <*> bMoveSet <*> shadow <*> visible
 
-  times <- case eResponse of
-    Nothing -> return never
-    Just r -> roundTripTimes eRequestSent r
+  onChanges $ labelSetMarkup (get (moveLabel . widgets)) . fst <$> b
 
-  reactimate $ print <$> times
-  
-  let squareMap = (\f -> if f then flipSquare else id) <$> flipped
-      view :: Behavior (Maybe Node.SomeNode)  -- Nothing for the root
-      view = viewNode <$> bTree
-      setup = Node.setupPhase <$> view
-      (eSetupToggle, eLeft') = RB.split $ (\b x -> if b then Left (fst x) else Right x)
-                                               <$> setup <@> (first <$> squareMap <@> eLeft)
-      splitLeftButton :: Array Colour Bool
-                      -> Maybe MoveSet
-                      -> (Square, (Double, Double))
-                      -> Either (Square, Int) Square
-      splitLeftButton v (Just ms) (sq, x) | Just (m, o) <- Map.lookup sq (captures ms)
-                                          , Just i <- smallSquare x
-                                          , j <- i - length (filter ((v !) . fst) m)
-                                          , j >= 0 && j < length o
-                                            = Left (sq, j)
-      splitLeftButton _ _ (sq, _) = Right sq
-      
-      (eToggleCapture, eArrowLeft) = RB.split $ splitLeftButton <$> visible <*> ms <@> eLeft'
-
-      nextMove :: Behavior (String, Maybe (GenMove, Position))
-      nextMove = f <$> viewPosition <*> ms <*> shadowBoard <*> visible
-        where
-          f :: Position -> Maybe MoveSet -> ShadowBoard -> Array Colour Bool -> (String, Maybe (GenMove, Position))
-          f pos mms sb v
-            | posSetupPhase pos && fullShadow sb
-              = g $ Left [(sq, piece) | (sq, Just (piece, _)) <- assocs (realiseShadow (posToMove pos) sb)]
-            | not (posSetupPhase pos)
-            , Just ms <- mms
-              = case currentMove ms of
-                 Nothing -> ("Move is ambiguous", Nothing)
-                 Just m -> g (Right m)
-            | otherwise = ("", Nothing)
-            where g move = either (\s -> ("<span foreground=\"red\">Illegal move (" ++ s ++ ")</span>", Nothing))
-                                  (\pos' -> (either (const "") (\m -> if (v ! posToMove pos) then show m else "[Move hidden]") move,
-                                             Just (move, pos')))
-                                  $ playGenMove pos move
-  
-      sendMove :: Behavior (Maybe GenMove)
-      sendMove = g <$> (posToMove . position <$> gameState) <*> bTree <*> (fmap fst . snd <$> nextMove) <*> sendStatus
-        where
-          g _ _ _ True = Nothing
-          g c tp n _ | not (isUser params ! c) = Nothing
-                     | otherwise = case stripPrefix (currentPos tp) (viewPos tp) of
-                       Just [] -> n
-                       Just (x:_) -> Node.regularMove =<< derefNode (tree tp) (currentPos tp ++ [x])
-                       _ -> Nothing
-  
-      send :: Event Request -> MomentIO (Behavior Bool)
-      send e = do
-        let f m = do
-              x <- request m
-              return $ if isJust eResponse then Just x else Nothing
-            g a (Just b) | a == b = Nothing
-            g _ b = b
-        e' <- mapEventIO f e
-        k <- accumB Nothing $ unions [const <$> e'
-                                     ,g <$> fromMaybe never eResponse
-                                     ]
-        return $ isJust <$> k
-
-      eMoveTime = filterJust (f <$> (posToMove . position <$> gameState)
-                                <*> bClocks ! Gold
-                                <*> bClocks ! Silver
-                                <@> eUpdate)
-        where f _ _ _ (UpdateMove (m, Just t)) = Just (m, Just t)
-              f c gc sc (UpdateMove (m, Nothing)) = Just (m, g (case c of Gold -> gc; Silver -> sc))
-              f _ _ _ _ = Nothing
-              g cl | used cl == 0 = Nothing
-                   | otherwise = Just $ used cl
-  
-      -- -- problem: redundant calls to playGenMove
-      -- eMove = f <$> (position <$> gameState) <@> eMoveTime
-      --                                                        -- !!!!!!!!!!!!!!!!
-      --   where f pos (m,x) = either error (\p -> Node.RegularNode (posBoard pos) m p x Nothing) (playGenMove pos m)
-
-      -- not using gameState is probably bad
-      eMove = fromMaybe (error "Current node not regular")
-          <$> (f <$> ((\gt -> derefNode (tree gt) (currentPos gt)) <$> bTree) <@> eMoveTime)
-        where
-          f node (move, t) = Node.useRegular' node $ \r -> case playGenMove (Node.regularPosition r) move of
-            Left e -> error e
-            Right p -> Node.SomeNode $ Node.mkRegularNode r move p ((,0) <$> t)
-
-  viewPosition <- switchStepper $ Node.position . viewNode <$> sTree
+  return (snd <$> b)
 
 ----------------------------------------------------------------
 
+-- includes draw board
+input
+  :: Events Event
+  -> Behavior (Array Colour Bool)
+  -> Behavior Bool
+  -> Event ()
+  -> Behavior Conf
+  -> Event (Maybe Node.SomeNode)
+  -> MomentIO (Behavior (Maybe (GenMove, Position)), Event (), Behavior Bool) -- nextMove, eInput, haveInput
+input events visible flipped eClear bConf eNode = mdo
+  let
+    squareMap = (\f -> if f then flipSquare else id) <$> flipped
+    setup = posSetupPhase <$> view
 
-  let ePlanFunc = filterJust (b <@ ePlan)
-        where b = (\c x v -> if getSetting' c enablePlans
-                                  then (\(m,p) -> Node.addFromRegular (\r -> Just (return (Node.SomeNode (Node.mkRegularNode r m p Nothing))))) <$> snd x
-                                  else Nothing)
-                    <$> bConf' <*> nextMove <*> view
+  (eArrowLeft, eSetupToggle, eToggleCapture) <- do
+    let
+      (e1, eLeft') = RB.split $ (\b x -> if b then Left (fst x) else Right x)
+                                    <$> setup <@> (first <$> squareMap <@> leftPress events)
 
-  bTicks <- accumB 0 ((+ 1) <$ eTick)
-  let eSecond = whenE ((== 0) . (`mod` tickFrequency) <$> bTicks) eTick
+      f :: Array Colour Bool -> Maybe MoveSet -> (Square, (Double, Double)) -> Either (Square, Int) Square
+      f v (Just ms) (sq, x)
+        | Just (m, o) <- Map.lookup sq (captures ms)
+        , Just i <- smallSquare x
+        , j <- i - length (filter ((v !) . fst) m)
+        , j >= 0 && j < length o
+          = Left (sq, j)
+      f _ _ (sq, _) = Right sq
+      
+      (e2, e3) = RB.split $ f <$> visible <*> bMoveSet <@> eLeft'
+    return (e3, e1, e2)
 
-  (sTree, eChangeView)
-    <- treeNetwork initialTree
-                   initialGamePos
-                   eMove
-                   ePlanFunc
-                   (whenE ((\gs -> not (or (isUser params)) || isJust (result gs)) <$> gameState) eSharp)
-                   (flip getSetting' killPlans <$> bConf')
-                   haveInput
-                   eInput
-                   eSecond
+  view <- switchB (pure newPosition) (Node.position <$> eNode)
+
+  (bArrows, liveArrow, eInput) <- do
+    arrows visible (posBoard <$> view) eArrowLeft (squareMap <@> release events) (squareMap <@> motion events) eClear
+
+  liveTraps <- do
+    let empty = Map.fromList (map (,False) trapSquares)
+    accumB empty $ unions [const empty <$ eClear
+                          ,(\sq -> Map.mapWithKey (\trap x -> if trap == sq then not x else x))
+                              <$> (squareMap <@> rightPress events)
+                          ]
+
+  shadow <- do
+    accumB newShadowBoard $ unions $ [const newShadowBoard <$ eClear
+                                     ,flipShadowSquare <$> (posToMove <$> view) <@> eSetupToggle
+                                     ] ++ zipWith (\i e -> (\(ShadowBoard b r c)
+                                                               -> ShadowBoard b r (if r ! i == 0 then c else i)) <$ e)
+                                                  [0..] (reverse (setupIconsE events))
+
+  let haveInput = (\as la lt s -> not (null as) || isJust la || or lt || not (emptyShadow s))
+                     <$> bArrows <*> liveArrow <*> liveTraps <*> shadow
+
+  bMoveSet <- moveSet (posBoard <$> view) (posToMove <$> view) bArrows liveTraps eToggleCapture
+
+  ----------------------------------------------------------------
 
   let
-    eTree = event sTree
-    bTree = behavior sTree
+    f :: Maybe Node.SomeNode -> Behavior (IO ())
+    f node = get setDrawBoard
+               <$> (drawNode node <*> shadow <*> ((\as la -> maybe as (:as) la) <$> bArrows <*> liveArrow) <*> liveTraps <*> bMoveSet <*> visible <*> squareMap <*> bConf)
+    in reactimateSwitch $ f <$> eNode
 
-  let bStartSend = f <$> gameState <*> sendMove
+  let setupLabelsB = (\(ShadowBoard _ remaining _) -> map show $ elems remaining) <$> shadow
+    in onChanges $ zipWithM_ labelSetText (reverse (get setupLabels)) <$> setupLabelsB
+
+  
+  let f pos (ShadowBoard _ _ current) v conf = do
+          zipWithM_ ($) (if posSetupPhase pos then [widgetShow, widgetHide] else [widgetHide, widgetShow])
+                        [get (setupGrid . widgets), get (captureGrid . widgets)]
+          if posSetupPhase pos then zipWithM_ g (reverse (get setDrawSetupIcons)) [0 .. length pieceInfo - 1]
+                               else get setDrawCapture (drawCaptures (posBoard pos) v (get icons Map.! getSetting' conf pieceSet))
         where
-          f _ (Just m) = Just (Just m)
-          f gs _ | not (started gs) = Just Nothing
-                 | otherwise = Nothing
+          g set i = set $ drawSetupIcon (i == current) (get icons Map.! getSetting' conf pieceSet ! (posToMove pos, i))
+    in onChanges $ f <$> view <*> shadow <*> visible <*> bConf
+
+  let f pos v | and v = printf "HarLog: %+.2f" $ harlog $ posBoard pos
+              | otherwise = ""
+    in onChanges $ labelSetText (get (harlogLabel . widgets)) <$> (f <$> view <*> visible)
+
+  ----------------------------------------------------------------
+
+  bMove <- nextMove visible view shadow bMoveSet
+
+  return (bMove, eInput, haveInput)
+
+--------------------------------------------------------------------------------------------------------------------------------
+
+splitEventIO :: Event (IO a) -> MomentIO (Event (IO ()), Event a)
+splitEventIO e = do
+  (e', fire) <- newEvent
+  return ((>>= fire) <$> e, e')
+
+mapSend :: Eq a => Event Request -> Either (Request -> IO ()) (Request -> IO a, MomentIO (Event a)) -> MomentIO (Event (IO ()), Behavior Bool)
+mapSend e (Left f) = return (f <$> e, pure False)
+mapSend eRequest (Right (request, x)) = do
+  eResponse <- x
+  (io, eRequestId) <- splitEventIO (request <$> eRequest)  -- avoid reactimate inside execute
+  let
+    g a (Just b) | a == b = Nothing
+    g _ b = b
+  k <- accumB Nothing $ unions [const . Just <$> eRequestId
+                               ,g <$> eResponse
+                               ]
+  times <- roundTripTimes eRequestId eResponse
+  let io2 = print <$> times
+
+  return (unionWith (>>) io io2, isJust <$> k)
   
-  eStartSend <- buttonAction (get (sendButton . buttonSet)) eSend bStartSend
-  startStatus <- send $ if isUser params ! Gold then RequestStart <$ whenE (not . started <$> gameState) eStartSend
-                                                else never
+requests
+  :: Events Event
+  -> Event NewGame
+  -> Behavior GameState
+  -> Behavior (GameTree Node.SomeNode)
+  -> Behavior (Maybe (GenMove, Position))
+  -> Behavior GameParams
+  -> MomentIO ()
+requests events eNewGame gameState bTree nextMove params = mdo
+  let
+    send :: Event Request -> MomentIO (Behavior Bool)
+    send e = do
+      iob <- execute ((\NewGame{request} -> mapSend e request) <$> eNewGame)
+      switchE (fst <$> iob) >>= reactimate
+      switchB (pure False) (snd <$> iob)
+
+    sendMove :: Behavior (Maybe GenMove)
+    sendMove = g <$> (posToMove . position <$> gameState) <*> bTree <*> (fmap fst <$> nextMove) <*> sendStatus <*> params
+      where
+        g _ _ _ True _ = Nothing
+        g c gt m _ p | not (isUser p ! c) = Nothing
+                     | otherwise = case stripPrefix (currentPos gt) (viewPos gt) of
+                         Just [] -> m
+                         Just (x:_) -> Node.regularMove =<< derefNode (tree gt) (currentPos gt ++ [x])
+                         _ -> Nothing
+
+    bStartSend = f <$> gameState <*> sendMove
+      where
+        f _ (Just m) = Just (Just m)
+        f gs _ | not (started gs) = Just Nothing
+               | otherwise = Nothing
+
+  eStartSend <- buttonAction (get (sendButton . widgets)) (sendE events) bStartSend
+  startStatus <- send $ RequestStart <$ whenE ((\gs p -> not (started gs) && isUser p ! Gold) <$> gameState <*> params) eStartSend
   sendStatus <- send $ RequestMove <$> filterJust eStartSend
-  resignStatus <- send $ filterJust $ fmap RequestResign defaultColour <$ eResign
-
-    -- inclusion of eSend here is a hack so that viewPos moves when sending a move
-  let eClear = foldr (unionWith const) never [eChangeView, eEscape, eSend]
-  
-  (as, la, eInput) <- arrows visible (posBoard <$> viewPosition) eArrowLeft (squareMap <@> eRelease) (squareMap <@> eMotion) eClear
-
-  let emptyLiveTraps = Map.fromList (map (,False) trapSquares)
-  liveTraps <- accumB emptyLiveTraps $ unions [const emptyLiveTraps <$ eClear
-                                               -- TODO: add left button trap toggle
-                                              ,(\sq -> Map.mapWithKey (\trap x -> if trap == sq then not x else x))
-                                                   <$> (squareMap <@> eRight)
-                                              ]
-
-  let haveInput = (\as la lt s -> not (null as) || isJust la || or lt || not (emptyShadow s)) <$> as <*> la <*> liveTraps <*> shadowBoard
-  
-  ms <- moveSet (posBoard <$> viewPosition) (Node.toMove <$> view) as liveTraps eToggleCapture
-
-  shadowBoard <- accumB newShadowBoard $ unions $ [const newShadowBoard <$ eClear
-                                                  ,flipShadowSquare <$> (Node.toMove <$> view) <@> eSetupToggle
-                                                  ] ++ zipWith (\i e -> (\(ShadowBoard b r c)
-                                                                            -> ShadowBoard b r (if r ! i == 0 then c else i)) <$ e)
-                                                               [0..] (reverse eSetupIcon)
-
-  (makeClocks, gameClockLabel) <- clocks params gameState eUpdate eTick
-  onChanges $ labelSetText (get (gameClock . widgets)) <$> gameClockLabel
-
-  bClocks <- (sequenceA $ mapColourArray makeClocks) :: MomentIO (Array Colour (Behavior Clocks))
-
-  -- note assumption that player names do not contain markup
-  forM_ [Gold, Silver] $ \c -> do
-    let nameString = names params ! c ++ maybe "" (printf " (%d)") (ratings params ! c)
-    sequence_ $ zipWith3 (\top bottom s -> onChanges $ (\f s -> labelSetMarkup (if (c == Gold) == f then get (top . widgets) else get (bottom . widgets)) s)
-                                                            <$> flipped <*> s)
-                         [topPlayer, topClock, topUsedClock]
-                         [bottomPlayer, bottomClock, bottomUsedClock]
-                         [pure nameString, bigLabel <$> bClocks ! c, usedLabel <$> bClocks ! c]
-
-  drawFB <- switchStepper $ drawNode . viewNode <$> sTree
-  let drawB = drawFB <*> shadowBoard <*> ((\as la -> maybe as (:as) la) <$> as <*> la) <*> liveTraps <*> ms <*> visible <*> squareMap <*> bConf'
-
-  onChanges $ get setDrawBoard <$> drawB
-
-  onChanges $ labelSetMarkup (get (moveLabel . widgets)) . fst <$> nextMove
 
   let f _ True _ = "Starting"
       f _ _ True = "Sending"
       f False _ _ = "Start"
       f _ _ _ = "Send"
-    in onChanges $ buttonSetLabel (get (sendButton . buttonSet)) <$> (f <$> (started <$> gameState) <*> startStatus <*> sendStatus)
+    in onChanges $ buttonSetLabel (get (sendButton . widgets)) <$> (f <$> (started <$> gameState) <*> startStatus <*> sendStatus)
 
-  onChanges $ buttonSetLabel (get (resignButton . buttonSet)) . (\b -> if b then "Resigning" else "Resign") <$> resignStatus
+  let defaultColour = (\p -> find (isUser p !) [Gold, Silver]) <$> params
+  eResign' <- buttonAction (get (resignButton . widgets)) (resignE events) (fmap RequestResign <$> defaultColour)
+  resignStatus <- send eResign'
 
-  let setupLabelsB = (\(ShadowBoard _ remaining _) -> map show $ elems remaining) <$> shadowBoard
-  onChanges $ zipWithM_ labelSetText (reverse (get setupLabels)) <$> setupLabelsB
+  onChanges $ buttonSetLabel (get (resignButton . widgets)) . (\b -> if b then "Resigning" else "Resign") <$> resignStatus
 
-  let f setup c b (ShadowBoard _ _ current) v conf = do
-          zipWithM_ ($) (if setup then [widgetShow, widgetHide] else [widgetHide, widgetShow])
-                        [get (setupGrid . widgets), get (captureGrid . widgets)]
-          if setup then zipWithM_ g (reverse (get setDrawSetupIcons)) [0 .. length pieceInfo - 1]
-                   else get setDrawCapture (drawCaptures b v (get icons Map.! getSetting' conf pieceSet))
-        where
-          g set i = set $ drawSetupIcon (i == current) (get icons Map.! getSetting' conf pieceSet ! (c, i))
-    in onChanges $ f <$> (Node.setupPhase <$> view) <*> (Node.toMove <$> view) <*> (posBoard <$> viewPosition) <*> shadowBoard <*> visible <*> bConf'
+--------------------------------------------------------------------------------------------------------------------------------
+  
+-- includes clocks
+move :: Behavior GameState
+     -> Event Update
+     -> Behavior (GameTree Node.SomeNode)
+     -> Array Colour (Behavior Clocks)
+     -> Event Node.SomeNode
+move gameState eUpdate bTree bClocks = eMove
+  where
+    dranClock = (!) <$> sequenceA bClocks <*> (posToMove . position <$> gameState)
+    
+    eMoveTime :: Event (GenMove, Maybe Int)
+    eMoveTime = filterJust (f <$> dranClock <@> eUpdate)
+      where
+        f _ (UpdateMove (m, Just t)) = Just (m, Just t)
+        f cl (UpdateMove (m, Nothing)) = Just (m, g cl)
+        f _ _ = Nothing
+        g cl | used cl == 0 = Nothing
+             | otherwise = Just $ used cl
 
-  let f pos visible | and visible = printf "HarLog: %+.2f" $ harlog $ posBoard pos
-                     | otherwise = ""
-    in onChanges $ labelSetText (get (harlogLabel . widgets)) <$> (f <$> viewPosition <*> visible)
+    -- problem: redundant calls to playGenMove
+    -- not using gameState is probably bad
+    -- shouldn't use Node stuff
+    eMove = fromMaybe (error "Current node not regular")
+        <$> (f <$> ((\gt -> derefNode (tree gt) (currentPos gt)) <$> bTree) <@> eMoveTime)
+      where
+        f node (move, t) = Node.useRegular' node $ \r -> case playGenMove (Node.regularPosition r) move of
+          Left e -> error e
+          Right p -> Node.SomeNode $ Node.mkRegularNode r move p ((,0) <$> t)
 
-  let f gs = printf "%s (%s)" (show (timeControl params)) (if rated params then "rated" else "unrated")
-             ++ maybe "" (\(c,r) -> printf " | %s won (%s)" (show c) (show r)) (result gs)
-    in onChanges $ labelSetText (get (gameLabel . widgets)) <$> (f <$> gameState)
+doClocks
+  :: Event NewGame
+  -> Behavior GameParams
+  -> Behavior GameState
+  -> Event Update
+  -> Event ()
+  -> Behavior Bool
+  -> MomentIO (Array Colour (Behavior Clocks))
+doClocks eNewGame bParams gameState eUpdate eTick flipped = do
+  e <- execute $ clocks gameState eUpdate eTick . params <$> eNewGame
+  let
+    eMkClocks = fst <$> e :: Event (Colour -> MomentIO (Behavior Clocks))
+    eGameClockLabel = snd <$> e :: Event (Behavior String)
+  bClocks <- sequenceA $ mapColourArray (\c -> execute (($ c) <$> eMkClocks) >>= switchB (pure newClocks))
+  gameClockLabel <- switchB (pure "") eGameClockLabel
+
+  -- note assumption that player names do not contain markup
+  forM_ [Gold, Silver] $ \c -> do
+    let nameString = (\p -> names p ! c ++ maybe "" (printf " (%d)") (ratings p ! c)) <$> bParams
+    sequence_ $ zipWith3 (\top bottom s -> onChanges $ (\f s -> labelSetMarkup (if (c == Gold) == f then get (top . widgets) else get (bottom . widgets)) s)
+                                                           <$> flipped <*> s)
+                         [topPlayer, topClock, topUsedClock]
+                         [bottomPlayer, bottomClock, bottomUsedClock]
+                         [nameString, bigLabel <$> bClocks ! c, usedLabel <$> bClocks ! c]
+
+  onChanges $ labelSetText (get (gameClock . widgets)) <$> gameClockLabel
+
+  return bClocks
+
+--------------------------------------------------------------------------------------------------------------------------------  
+
+data Events f = Events
+  {newGameE :: f NewGame
+  ,leftPress :: f (Square, (Double, Double))
+  ,rightPress :: f Square
+  ,release :: f Square
+  ,motion :: f Square
+  ,flipE :: f ()
+  ,tick :: f ()
+  ,blindMode :: f (Bool, Bool)
+  ,setupIconsE :: [f ()]
+  ,treePress :: f (Double, Double)
+  ,sendE :: f ()
+  ,resignE :: f ()
+  ,sharpE :: f ()
+  ,planE :: f ()
+  ,clearE :: f ()
+  ,prevE :: f ()
+  ,nextE :: f ()
+  ,startE :: f ()
+  ,endE :: f ()
+  ,currentE :: f ()
+  ,deleteNodeE :: f ()
+  ,deleteLineE :: f ()
+  ,deleteAllE :: f ()
+  ,prevBranchE :: f ()
+  ,nextBranchE :: f ()
+  ,deleteFromHereE :: f ()
+  ,confE :: f Conf
+  ,toggleSharpE :: f ()
+  ,copyMovelistE :: f ()
+  }
+
+Rank2.TH.deriveFunctor ''Events
+Rank2.TH.deriveFoldable ''Events
+Rank2.TH.deriveTraversable ''Events
+
+network :: Events AddHandler -> MomentIO ()
+network ahs = mdo
+  events <- Rank2.traverse fromAddHandler ahs
+
+  do
+    b <- stepper (return ()) (cleanup <$> (newGameE events))
+    reactimate $ ((>> killSharps) <$> b) <@ (newGameE events)
+
+  bParams <- stepper emptyGameParams (params <$> (newGameE events))
+
+  (bGameState, eUpdate) <- do
+    e <- execute (updates <$> (newGameE events))
+    x <- switchB (pure newGameState) (fst <$> e)
+    y <- switchE (snd <$> e)
+    return (x, y)
+
+  bConf <- do
+    conf <- liftIO $ readTVarIO (get conf)
+    stepper conf (confE events)
+
+  bFlipped <- do
+    let initialSide conf game | getSetting' conf viewMySide = fromMaybe Gold $ find (isUser (params game) !) [Gold, Silver]
+                              | otherwise = Gold
+    accumB False $ unions [(\c g -> const (initialSide c g == Silver)) <$> bConf <@> (newGameE events)
+                          ,not <$ flipE events
+                          ]
+
+  bVisible <- do
+    bBlind <- stepper (True, True) (blindMode events)
+    return $ (\(seeFriendly, seeEnemy) params -> mapColourArray (\c -> if isUser params ! c then seeFriendly else seeEnemy))
+                <$> bBlind <*> bParams
+
+  (bNextMove, eInput, haveInput) <- input events bVisible bFlipped eClear bConf eNode
+
+  requests events (newGameE events) bGameState bTree bNextMove bParams
+
+  bClocks <- doClocks (newGameE events) bParams bGameState eUpdate (tick events) bFlipped
+
+  let
+    eMove = move bGameState eUpdate bTree bClocks
+
+    ePlanFunc = filterJust (f <$> bConf <*> bNextMove <@ planE events)
+      where
+        f c x
+          | getSetting' c enablePlans
+          = (\(m, p) -> Node.addFromRegular (\r -> Just (return (Node.SomeNode (Node.mkRegularNode r m p Nothing))))) <$> x
+          | otherwise = Nothing
+
+  eSecond <- do
+    bTicks <- accumB 0 ((+ 1) <$ tick events)
+    return $ whenE ((== 0) . (`mod` tickFrequency) <$> bTicks) (tick events)
+
+  let eSharp = whenE ((\gs p -> not (or (isUser p)) || isJust (result gs)) <$> bGameState <*> bParams) (sharpE events)
+
+  -- eNode includes (newGameE events)
+  (bTree, eNode) <- mdo
+    let
+      f t = mkGameTree t initialPos (take 2 initialPos)
+        where initialPos = replicate (leftDepth t) 0
+      user = (\gt p -> isUser p ! Node.toMove (viewNode gt)) <$> bTree <*> bParams
+    treeNetwork events
+                (f . initialTree <$> (newGameE events))
+                eMove
+                ePlanFunc
+                eSharp
+                (flip getSetting' killPlans <$> bConf)
+                eInput
+                (liftA2 (&&) haveInput (not <$> user))
+                eSecond
+
+  let eClear = unionWith const (void eNode) (clearE events)
+
+  let f gs params = printf "%s (%s)" (show (timeControl params)) (if rated params then "rated" else "unrated")
+                     ++ maybe "" (\(c,r) -> printf " | %s won (%s)" (show c) (show r)) (result gs)
+    in onChanges $ labelSetText (get (gameLabel . widgets)) <$> (f <$> bGameState <*> bParams)
 
     -- TODO: move number, other notations, multiple moves
-  bCopy <- switchStepper $ fmap (maybe "" showGenMove) . Node.getMove . viewNode <$> sTree
-  let f s = clipboardGet selectionClipboard >>= flip clipboardSetText s
-    in reactimate $ f <$> (bCopy <@ eCopy)
+  do
+    bCopy <- switchB (pure undefined) $ fmap (maybe "" showGenMove) . Node.getMove <$> eNode
+    let f s = clipboardGet selectionClipboard >>= flip clipboardSetText s
+      in reactimate $ f <$> (bCopy <@ copyMovelistE events)
 
+--------------------------------------------------------------------------------------------------------------------------------
 
-    -- do
-  --   c <- clipboardGet selectionClipboard
-  --   clipboardSetText c (replicate 50 'X')
+newGameRef = unsafePerformIO $ newIORef undefined
 
+newGameEither
+  :: Eq a
+  => GameParams
+  -> Forest Node.SomeNode
+  -> Either (Request -> IO ()) (Request -> IO a, MomentIO (Event a))
+  -> MomentIO (Behavior GameState, Event Update)
+  -> IO ()
+  -> IO ()
+newGameEither params initialTree request updates cleanup = do
+  f <- readIORef newGameRef
+  f NewGame{..}
 
+newGame params initialTree request response updates cleanup
+  = newGameEither params initialTree (Right (request, response)) updates cleanup
 
-----------------------------------------------------------------
-
-newGame (params :: GameParams)
-        (initialTree :: Forest Node.SomeNode)
-        (request :: Request -> IO a)
-        (responses :: MomentIO (Maybe (Event a)))
-        (updates :: MomentIO (Behavior GameState, Event Update))
-        (cleanup :: IO ())
-  = do
-  join $ readIORef (get killGameRef)
-
-  mySide <- getConf' viewMySide
-  let initialSide = if mySide then fromMaybe Gold $ find (isUser params !) [Gold, Silver]
-                              else Gold
-
-  network <- compile $ do
-    eResponse <- responses
-    (gameState, eUpdate) <- updates
-
-    eFlip <- fromAddHandler (get flipAH)
-    flipped <- accumB (initialSide == Silver) $ not <$ eFlip
-
-    gameNetwork params initialTree (replicate (leftDepth initialTree) 0)
-                request
-                eResponse gameState eUpdate
-                flipped
-
-  actuate network
-
-  writeIORef (get killGameRef) $ do
-    pause network
-    killSharps
-    cleanup
-
-----------------------------------------------------------------
+newGame' params initialTree request updates cleanup
+  = newGameEither @() params initialTree (Left request) updates cleanup

@@ -133,8 +133,9 @@ instance Eq SharpProcess where
 
 ----------------------------------------------------------------
 
+-- !!!!!! shouldn't use internal; or at least figure out version dependency
 signalPH :: ProcessHandle -> Signal -> IO ()
-signalPH (ProcessHandle m _) s = readMVar m >>= \case
+signalPH (ProcessHandle m _ _) s = readMVar m >>= \case
   OpenHandle pid -> signalProcess s pid
   _ -> return ()
 
