@@ -20,7 +20,6 @@ import Data.Traversable
 import Data.Time.Clock
 import System.Process
 import System.Process.Internals
-import System.Posix.Signals
 import System.IO.Unsafe
 import Control.Monad
 import Graphics.UI.Gtk(postGUIAsync)
@@ -29,6 +28,20 @@ import Base
 import Env
 import Settings
 import WidgetValue
+
+--import System.Posix.Signals
+-- Code to get the build to work on Windows
+import Foreign.C.Types (CInt)
+import Data.Int (Int32)
+type Signal = CInt
+newtype CPid = CPid Int32
+type ProcessID = CPid
+signalProcess :: Signal -> ProcessID -> IO ()
+signalProcess = undefined
+sigCONT :: CInt
+sigCONT = undefined
+sigSTOP :: CInt
+sigSTOP = undefined
 
 data SharpVal = SharpVal
   {sharpDepth :: String
@@ -133,11 +146,15 @@ instance Eq SharpProcess where
 
 ----------------------------------------------------------------
 
+{-
 -- !!!!!! shouldn't use internal; or at least figure out version dependency
 signalPH :: ProcessHandle -> Signal -> IO ()
 signalPH (ProcessHandle m _ _) s = readMVar m >>= \case
   OpenHandle pid -> signalProcess s pid
   _ -> return ()
+-}
+signalPH :: ProcessHandle -> Signal -> IO ()
+signalPH = undefined
 
 sharps :: IORef [SharpProcess]
 sharps = unsafePerformIO $ newIORef []
