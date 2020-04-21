@@ -1,6 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards, TypeApplications #-}
+{-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards, TypeApplications, DeriveGeneric #-}
 
 module Scrape where
 
@@ -9,6 +9,10 @@ import Data.Maybe
 import Data.List.Split
 import Data.Char
 import Data.List
+import GHC.Generics
+import Data.Aeson hiding (Array)
+import Data.String
+import Lens.Micro
 
 import Network.HTTP hiding (Request, password)
 import Text.HTML.TagSoup
@@ -18,6 +22,47 @@ import Text.Read hiding (lift, get)
 
 import Base
 
+data GameJSON = GameJSON
+  {gusername, susername :: String
+  ,grating, srating :: String
+  ,timecontrol :: String
+  ,rated :: String
+  ,result :: String
+  ,termination :: String
+--  ,movelist :: String
+  ,events :: String
+  } deriving Generic
+
+instance FromJSON GameJSON
+
+getGameJSON :: Int -> IO (Maybe GameJSON)
+getGameJSON n = do
+  s <- getResponseBody =<< (simpleHTTP $ getRequest $ "http://arimaa.com/arimaa/games/agn.cgi?gid=" ++ show n ++ "&f=json&c=gs")
+  return $ decode (fromString s)
+
+eventsLine :: String -> Maybe (Int, String)
+eventsLine s = do
+  [a, b] <- matchRegex (mkRegex "([[:digit:]]+)[[:space:]]*\\[[^]]*\\][[:space:]]*(.*)") s
+  n <- readMaybe a
+  return (n, b)
+
+moveTimes :: [(Int, String)] -> Maybe [(GenMove, Int)]
+moveTimes events
+  | not $ and $ zipWith (==) (map (fmap fst . snd) l) (Nothing : map (Just . moveNum) [0..]) = Nothing
+  | otherwise = Just $ zip moves times'
+  where
+    r1 = mkRegex "start.*received"
+    r2 = mkRegex "move (.*) received.*\\[(.*)\\]"
+    f s | isJust (matchRegex r1 s) = Just Nothing
+        | Just [n, m] <- matchRegex r2 s
+        , Just m' <- readGenMove m
+        = Just (Just (n, m'))
+        | otherwise = Nothing
+    l = mapMaybe (_2 f) events
+    moves = mapMaybe (fmap snd . snd) l
+    times = map fst l
+    times' = zipWith (-) (tail times) times
+
 data ServerGameInfo = ServerGameInfo
   {sgiNames :: Array Colour String
   ,sgiRatings :: Array Colour Int
@@ -25,32 +70,58 @@ data ServerGameInfo = ServerGameInfo
   ,sgiRated :: Bool
   ,sgiResult :: (Colour, Reason)
   ,sgiMoves :: [(GenMove, Int)]
-  }
+  } deriving Show
+
+readJSON :: GameJSON -> Maybe ServerGameInfo
+readJSON GameJSON{..} = do
+  gr <- readMaybe grating
+  sr <- readMaybe srating
+  tc <- parseTimeControl timecontrol
+  rated' <- case rated of
+    "0" -> Just False
+    "1" -> Just True
+    _ -> Nothing
+  result' <- case result of
+    [c] -> charToColour c
+    _ -> Nothing
+  reason <- case termination of
+    [c] -> readReason c
+    _ -> Nothing
+  mt <- moveTimes $ mapMaybe eventsLine (lines events)
+  return ServerGameInfo
+    {sgiNames = colourArray [gusername, susername]
+    ,sgiRatings = colourArray [gr, sr]
+    ,sgiTimeControl = tc
+    ,sgiRated = rated'
+    ,sgiResult = (result', reason)
+    ,sgiMoves = mt
+    }
 
 getServerGame :: Int -> IO (Maybe ServerGameInfo)
-getServerGame n = do
-  s <- getResponseBody =<< (simpleHTTP $ getRequest $ "http://arimaa.com/arimaa/gameroom/opengamewin.cgi?gameid=" ++ show n)
-  let f s = case matchRegex (mkRegex "arimaa\\.vars\\.(.*)=\"(.*)\"") s of
-        Just [a, b] -> Just (a, b)
-        _ -> Nothing
-      assocs = mapMaybe f $ lines s
-  return $ do
-    [wplayer, bplayer, wrating, brating, timecontrol, rated, result, reason, movelist, timeused]
-      <- mapM (flip lookup assocs)
-              ["wplayer", "bplayer", "wrating", "brating", "timecontrol", "rated", "result", "reason", "movelist", "timeused"]
-    rs <- mapM readMaybe [wrating, brating]
-    tc <- parseTimeControl timecontrol
-    r <- case reason of [c] -> readReason c; _ -> Nothing
-    let ms = mapMaybe readGenMove $ splitOn "\\n" movelist
---    ms <- either (const Nothing) Just $ P.parse movesParser "" movelist
-    ts <- mapM readMaybe $ splitOn " " timeused
-    Just ServerGameInfo{sgiNames = colourArray [wplayer, bplayer]
-                       ,sgiRatings = colourArray rs
-                       ,sgiTimeControl = tc
-                       ,sgiRated = rated == "1"
-                       ,sgiResult = (if elem result ["w","g"] then Gold else Silver, r)
-                       ,sgiMoves = zip ms ts
-                       }
+getServerGame n = (>>= readJSON) <$> getGameJSON n
+  
+--   s <- getResponseBody =<< (simpleHTTP $ getRequest $ "http://arimaa.com/arimaa/gameroom/opengamewin.cgi?gameid=" ++ show n)
+--   let f s = case matchRegex (mkRegex "arimaa\\.vars\\.(.*)=\"(.*)\"") s of
+--         Just [a, b] -> Just (a, b)
+--         _ -> Nothing
+--       assocs = mapMaybe f $ lines s
+--   return $ do
+--     [wplayer, bplayer, wrating, brating, timecontrol, rated, result, reason, movelist, timeused]
+--       <- mapM (flip lookup assocs)
+--               ["wplayer", "bplayer", "wrating", "brating", "timecontrol", "rated", "result", "reason", "movelist", "timeused"]
+--     rs <- mapM readMaybe [wrating, brating]
+--     tc <- parseTimeControl timecontrol
+--     r <- case reason of [c] -> readReason c; _ -> Nothing
+--     let ms = mapMaybe readGenMove $ splitOn "\\n" movelist
+-- --    ms <- either (const Nothing) Just $ P.parse movesParser "" movelist
+--     ts <- mapM readMaybe $ splitOn " " timeused
+--     Just ServerGameInfo{sgiNames = colourArray [wplayer, bplayer]
+--                        ,sgiRatings = colourArray rs
+--                        ,sgiTimeControl = tc
+--                        ,sgiRated = rated == "1"
+--                        ,sgiResult = (if elem result ["w","g"] then Gold else Silver, r)
+--                        ,sgiMoves = zip ms ts
+--                        }
 
 ----------------------------------------------------------------
 
@@ -81,87 +152,6 @@ rmTag s = transformTree f
   where
     f (TagBranch s' _ _) | s' == s = []
     f x = [x]
-
-
-
--- rmTag :: String -> [TagTree String] -> [TagTree String]
--- rmTag s [] = []
--- rmTag s (TagBranch s' as l : ts) | s == s' = rmTag s ts
---                                  | otherwise = TagBranch s' as (rmTag s l) : rmTag s ts
--- rmTag s (tl : ts) = tl : rmTag s ts
-
--- data LiveGameInfo = LiveGameInfo
---   {liveNames :: Array Colour String
---   ,liveRatings :: Array Colour Int
---   ,liveTimeControl :: TimeControl
---   ,liveRated :: Bool
---   ,liveGid :: String
---   } deriving Show
-
--- getLiveGames :: String -> IO [LiveGameInfo]
--- getLiveGames url = do
---   s <- getResponseBody =<< simpleHTTP (getRequest url)
---   let table = head [l | TagBranch "table" _ l <- universeTree $ parseTree s]
---       g tr | any (\case {TagBranch "table" _ _ -> True; _ -> False}) (universeTree tr) = Right tr
---            | otherwise = Left $ head [s | TagLeaf (TagText s) <- universeTree tr, not (all isSpace s)]
---       trs = [r | Right r <- takeWhile (/= Left "Scheduled Games") $ map g $ drop 2 [l | TagBranch "tr" _ l <- table]]
---       f tr = LiveGameInfo{liveNames = colourArray [gn, sn]
---                          ,liveRatings = colourArray $ map parseRating [gr, sr]
---                          ,liveTimeControl
---                          ,liveRated
---                          ,liveGid
---                          }
---         where
---              -- <sup> tags contain move numbers on the postal games page
---           a = [s | TagLeaf (TagText s) <- universeTree (rmTag "sup" tr), not (all isSpace s)]
---           (r, [gn, gr, tc, sn, sr]) = partition (== "R") a
---           liveRated = not (null r)
---           Just liveTimeControl = parseTimeControl tc
---           parseRating = head . mapMaybe readMaybe . words
---           ([liveGid]:_) = mapMaybe (matchRegex (mkRegex "openGame.*\\('([[:digit:]]+)"))
---                        [fromJust (lookup "href" attrs) | TagBranch "a" attrs _ <- universeTree tr]
---   return $ map f trs
-
--- text t = [s | TagLeaf (TagText s) <- universeTree t]
-
--- data RecentGameInfo = RecentGameInfo
---   {rgiNames :: Array Colour String
---   ,rgiRatings :: Array Colour Int
---   ,rgiWinner :: Colour
---   ,rgiRated :: Bool
---   ,rgiTimeControl :: TimeControl
---   ,rgiReason :: Reason
---   ,rgiMoveCount :: Int
---   ,rgiGid :: Int
---   } deriving Show
-
--- getRecentGames :: IO [RecentGameInfo]
--- getRecentGames = do
---   s <- getResponseBody =<< simpleHTTP (getRequest "http://arimaa.com/arimaa/gameroom/recentgames.cgi")
---   let table = [l | TagBranch "table" _ l <- universeTree $ parseTree s] !! 1
---       trs = drop 2 [l | TagBranch "tr" _ l <- table]
---       f tr = RecentGameInfo {rgiNames = colourArray [gn, sn]
---                             ,rgiRatings = colourArray [gr, sr]
---                             ,rgiWinner = fst $ fromJust $ find snd [(Gold, gw), (Silver, sw)]
---                             ,rgiRated = not (null r)
---                             ,rgiTimeControl = fromJust (parseTimeControl (filter (not . isSpace) tc))
---                             ,rgiReason = fromJust $ readReason $ head $ (filter (not . isSpace) (head (text reason)))
---                             ,rgiMoveCount = read @Int (head (text moves))
---                             ,rgiGid = gid
---                             }
---         where
---           [gold, board, silver, _, reason, moves, _, _time, _, _comments]
---             = [l | TagBranch "td" _ l <- tr]
---           g c = (name, head (mapMaybe (readMaybe @Int) (words r)), not (all isSpace (w1 ++ w2)))
---             where [w1, name, w2, r, _] = text c
---           [(gn, gr, gw), (sn, sr, sw)] = map g [gold, silver]
---           (r, [tc]) = partition (== "R") $ filter (not . all isSpace) $ text board
---           gid = head $ mapMaybe k $ map snd $ concat [a | TagBranch "a" a _ <- universeTree board]
---           k s | "openGame" `isInfixOf` s = readMaybe $ filter isDigit s
---               | otherwise = Nothing
---   return $ map f trs
-
-
 
 data ScrapeGameInfo = ScrapeGameInfo
   {giNames :: Array Colour String
@@ -259,6 +249,3 @@ readTr _ = Nothing
 getGames url = do
   s <- getResponseBody =<< simpleHTTP (getRequest url)
   return $ mapMaybe readTr [l | TagBranch "tr" _ l <- universeTree (parseTree s)]
-
---recent = "http://arimaa.com/arimaa/gameroom/recentgames.cgi"
---postal = "http://arimaa.com/arimaa/gameroom/postalgames.cgi"
