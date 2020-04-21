@@ -58,8 +58,8 @@ data Env = Env
   ,statusStack :: TVar [(Unique, String)]
   ,myGames :: TVar [Protocol.GameInfo]
   ,openGames :: TVar [Protocol.GameInfo]
-  ,liveGames :: TVar [LiveGameInfo]
-  ,postalGames :: TVar [LiveGameInfo]
+  ,liveGames :: TVar [ScrapeGameInfo]
+  ,postalGames :: TVar [ScrapeGameInfo]
   ,conf :: TVar Conf
   ,gameroomRef :: TVar (Maybe Gameroom)
   ,setConf :: Conf -> IO ()

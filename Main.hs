@@ -403,8 +403,8 @@ updateServerGames = forever $ do
   gameroom <- gameroom
   Protocol.myGames gameroom >>= atomically . writeTVar (get myGames)
   Protocol.openGames gameroom >>= atomically . writeTVar (get openGames)
-  getLiveGames "http://arimaa.com/arimaa/gameroom/watchgames.cgi" >>= atomically . writeTVar (get liveGames)
-  getLiveGames "http://arimaa.com/arimaa/gameroom/postalgames.cgi" >>= atomically . writeTVar (get postalGames)
+  getGames "http://arimaa.com/arimaa/gameroom/watchgames.cgi" >>= atomically . writeTVar (get liveGames)
+  getGames "http://arimaa.com/arimaa/gameroom/postalgames.cgi" >>= atomically . writeTVar (get postalGames)
   threadDelay (30 * 10^6)
 
 makeTreeStore :: Forest a -> [(String, a -> [AttrOp CellRendererText])] -> IO (TreeStore a, TreeView)
@@ -478,15 +478,15 @@ watchGameCallback = do
                             ,Node (Left "Postal games") (map (\g -> Node (Right g) []) postalGames)
                             ]
                             [("Gold", \x -> [cellText := either id (\lgi -> printf "%s (%d)"
-                                                                                   (liveNames lgi ! Gold)
-                                                                                   (liveRatings lgi ! Gold))
+                                                                                   (giNames lgi ! Gold)
+                                                                                   (giRatings lgi ! Gold))
                                                                 x])
                             ,("Silver", \x -> [cellText := either (const "") (\lgi -> printf "%s (%d)"
-                                                                                             (liveNames lgi ! Silver)
-                                                                                             (liveRatings lgi ! Silver))
+                                                                                             (giNames lgi ! Silver)
+                                                                                             (giRatings lgi ! Silver))
                                                                   x])
-                            ,("Time control", \x -> [cellText := either (const "") (show . liveTimeControl) x])
-                            ,("Rated", \x -> [cellText := either (const "") (\lgi -> if liveRated lgi then "R" else "U") x])
+                            ,("Time control", \x -> [cellText := either (const "") (show . giTimeControl) x])
+                            ,("Rated", \x -> [cellText := either (const "") (\lgi -> if giRated lgi then "R" else "U") x])
                             ]
 
   treeViewExpandAll tv
@@ -506,14 +506,14 @@ watchGameCallback = do
       Just iter -> treeModelGetPath ts iter >>= treeStoreGetValue ts >>= \case
         Left _ -> return ()
         Right lgi -> do
-          forkIO $ withStatus "Starting game" $ watchGame $ liveGid lgi
+          forkIO $ withStatus "Starting game" $ watchGame $ show $ giGid lgi
           widgetDestroy d
     _ -> widgetDestroy d
 
   return ()
 
 recentGamesCallback :: IO ()
-recentGamesCallback = background (withStatus "Fetching games" getRecentGames) $ \games -> do
+recentGamesCallback = background (withStatus "Fetching games" (getGames "http://arimaa.com/arimaa/gameroom/recentgames.cgi")) $ \games -> do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)
             ,windowDefaultWidth := 800
@@ -526,12 +526,12 @@ recentGamesCallback = background (withStatus "Fetching games" getRecentGames) $ 
 
   (ts, tv) <- makeTreeStore
     (map (\g -> Node g []) games)
-    [("Gold", \g -> [cellText := (printf "%s%s (%d)" (if rgiWinner g == Gold then "*" else "") (rgiNames g ! Gold) (rgiRatings g ! Gold) :: String)])
-    ,("Silver", \g -> [cellText := (printf "%s%s (%d)" (if rgiWinner g == Silver then "*" else "") (rgiNames g ! Silver) (rgiRatings g ! Silver) :: String)])
-    ,("Time control", \g -> [cellText := show (rgiTimeControl g)])
-    ,("Rated", \g -> [cellText := if rgiRated g then "R" else "U"])
-    ,("Reason", \g -> [cellText := show (rgiReason g)])
-    ,("Move count", \g -> [cellText := show (rgiMoveCount g)])
+    [("Gold", \g -> [cellText := (printf "%s%s (%d)" (if giWinner g == Just Gold then "*" else "") (giNames g ! Gold) (giRatings g ! Gold) :: String)])
+    ,("Silver", \g -> [cellText := (printf "%s%s (%d)" (if giWinner g == Just Silver then "*" else "") (giNames g ! Silver) (giRatings g ! Silver) :: String)])
+    ,("Time control", \g -> [cellText := show (giTimeControl g)])
+    ,("Rated", \g -> [cellText := if giRated g then "R" else "U"])
+    ,("Reason", \g -> [cellText := maybe "" show (giReason g)])
+    ,("Move count", \g -> [cellText := maybe "" show (giMoveCount g)])
     ]
 
   treeViewExpandAll tv
@@ -549,7 +549,7 @@ recentGamesCallback = background (withStatus "Fetching games" getRecentGames) $ 
     ResponseOk -> treeViewGetSelection tv >>= treeSelectionGetSelected >>= \case
       Nothing -> return ()
       Just iter -> treeModelGetPath ts iter >>= treeStoreGetValue ts >>= \g ->
-        viewGame (rgiGid g) (widgetDestroy d)
+        viewGame (giGid g) (widgetDestroy d)
     _ -> widgetDestroy d
 
   return ()
