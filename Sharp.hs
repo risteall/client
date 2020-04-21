@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards #-}
+{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards, CPP #-}
 
 module Sharp(SharpVal(..), Eval, flipEval, SharpStatus(..), SharpProcess(status, val), mkSharpProcess, killSharp, killSharps) where
 
@@ -29,8 +29,10 @@ import Env
 import Settings
 import WidgetValue
 
---import System.Posix.Signals
--- Code to get the build to work on Windows
+#ifndef WindowsBuild
+import System.Posix.Signals
+#else
+-- Near-minimal code to get the build to work on Windows
 import Foreign.C.Types (CInt)
 import Data.Int (Int32)
 type Signal = CInt
@@ -42,6 +44,7 @@ sigCONT :: CInt
 sigCONT = undefined
 sigSTOP :: CInt
 sigSTOP = undefined
+#endif
 
 data SharpVal = SharpVal
   {sharpDepth :: String
@@ -146,15 +149,16 @@ instance Eq SharpProcess where
 
 ----------------------------------------------------------------
 
-{-
+#ifndef WindowsBuild
 -- !!!!!! shouldn't use internal; or at least figure out version dependency
 signalPH :: ProcessHandle -> Signal -> IO ()
 signalPH (ProcessHandle m _ _) s = readMVar m >>= \case
   OpenHandle pid -> signalProcess s pid
   _ -> return ()
--}
+#else
 signalPH :: ProcessHandle -> Signal -> IO ()
 signalPH = undefined
+#endif
 
 sharps :: IORef [SharpProcess]
 sharps = unsafePerformIO $ newIORef []
