@@ -48,8 +48,9 @@ eventsLine s = do
 
 moveTimes :: [(Int, String)] -> Maybe [(GenMove, Int)]
 moveTimes events
-  | not $ and $ zipWith (==) (map (fmap fst . snd) l) (Nothing : map (Just . moveNum) [0..]) = Nothing
-  | otherwise = Just $ zip moves times'
+  | and $ zipWith (==) (map (fmap fst . snd) l) (Nothing : map (Just . moveNum) [0..])
+  = Just $ zip moves times'
+  | otherwise = Nothing
   where
     r1 = mkRegex "start.*received"
     r2 = mkRegex "move (.*) received.*\\[(.*)\\]"
@@ -77,10 +78,7 @@ readJSON GameJSON{..} = do
   gr <- readMaybe grating
   sr <- readMaybe srating
   tc <- parseTimeControl timecontrol
-  rated' <- case rated of
-    "0" -> Just False
-    "1" -> Just True
-    _ -> Nothing
+  let rated' = rated == "1"
   result' <- case result of
     [c] -> charToColour c
     _ -> Nothing

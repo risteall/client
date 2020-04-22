@@ -15,6 +15,7 @@ import System.IO.Unsafe
 import Control.Concurrent
 import Data.Time.Clock
 import Data.Colour.SRGB (RGB)
+import Data.AppSettings
 
 import Base
 import Misc
@@ -70,12 +71,20 @@ mkRegularNode node move position times = Node
     }
   }
 
-mkSharpNode :: HasRegular r => [Move] -> Maybe (Node r) -> Maybe (Event () -> Event () -> Event () -> MomentIO (Node 'Sharp))
-mkSharpNode excludes node = f <$> mkSharpProcess m p excludes
+mkSharpNode :: HasRegular r => [Move] -> Maybe (Node r) -> Behavior Conf -> Event () -> Event () -> Event () -> MomentIO (Maybe (Node 'Sharp))
+mkSharpNode excludes node bConf e1 e2 e3 =
+    fmap (fmap f) $ mkSharpProcess m p excludes bConf e1 e2 e3
   where
     p = regularPosition node
     m = nextMovelist node
-    f g e1 e2 e3 = Node p m . CS <$> g e1 e2 e3
+    f s = Node p m (CS s)
+
+-- mkSharpNode :: HasRegular r => [Move] -> Maybe (Node r) -> Maybe (Event () -> Event () -> Event () -> MomentIO (Node 'Sharp))
+-- mkSharpNode excludes node = f <$> mkSharpProcess m p excludes
+--   where
+--     p = regularPosition node
+--     m = nextMovelist node
+--     f g e1 e2 e3 = Node p m . CS <$> g e1 e2 e3
 
 -- doesn't pause Sharp
 mkDormantNode :: Node 'Sharp -> Maybe (Int, Int) -> MomentIO (Maybe (Node 'Dormant))
@@ -208,19 +217,21 @@ addFromRegular f gt = sleepAtView gt >>= \case
     Nothing -> return (gt, Nothing)
     Just x -> (\n -> (treePlan n gt', s)) <$> x
 
-addSharp :: Event [SharpProcess] -> Event [SharpProcess] -> Event () -> GameTree SomeNode -> MomentIO (GameTree SomeNode, Maybe SharpProcess)
-addSharp ePause eToggle eSecond gt = sleepAtView gt >>= \case
+addSharp :: Behavior Conf -> Event [SharpProcess] -> Event [SharpProcess] -> Event () -> GameTree SomeNode -> MomentIO (GameTree SomeNode, Maybe SharpProcess)
+addSharp bConf ePause eToggle eSecond gt = sleepAtView gt >>= \case
     Nothing -> return (gt, Nothing)
     Just (gt', s) -> do
       excludes' <- excludes
-      case join (useRegular' (viewNode gt') (mkSharpNode excludes')) of
+      case useRegular' (viewNode gt') (mkSharpNode excludes') of
         Nothing -> return (gt, Nothing)
         Just f -> mdo
-          ns <- f ePause' eToggle' eSecond
-          let
-            CS s' = content ns
-            [ePause', eToggle'] = map ((() <$) . filterE (elem s')) [ePause, eToggle]
-          return (treePlan (SomeNode ns) gt', s)
+          mns <- f bConf ePause' eToggle' eSecond
+          let [ePause', eToggle'] = case content <$> mns of
+                Nothing -> [never, never]
+                Just (CS s') -> map ((() <$) . filterE (elem s')) [ePause, eToggle]
+          case mns of
+            Nothing -> return (gt, Nothing)
+            Just ns -> return (treePlan (SomeNode ns) gt', s)
   where
     f :: SomeNode -> MomentIO (Maybe Move)
     f n = case getContentS n of

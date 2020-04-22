@@ -336,6 +336,7 @@ treeAccum init pures impures = mdo
 
 treeNetwork
   :: Events Event
+  -> Behavior Conf
   -> Event (GameTree Node.SomeNode)
   -> Event Node.SomeNode
   -> Event (GameTree Node.SomeNode -> MomentIO (GameTree Node.SomeNode, Maybe SharpProcess))
@@ -345,7 +346,7 @@ treeNetwork
   -> Behavior Bool
   -> Event ()
   -> MomentIO (Behavior (GameTree Node.SomeNode), Event (Maybe Node.SomeNode))
-treeNetwork events eInitialTree eMove ePlan eSharp killPlans eInput haveInput eSecond = mdo
+treeNetwork events bConf eInitialTree eMove ePlan eSharp killPlans eInput haveInput eSecond = mdo
   let
     eTreeMove = treeMove <$> killPlans <*> haveInput <*> behavior sTree <@> eMove
 
@@ -393,7 +394,7 @@ treeNetwork events eInitialTree eMove ePlan eSharp killPlans eInput haveInput eS
              ]))
          (foldr (unionWith (z (\(a1, b1) (a2, b2) -> (a1++a2, b1++b2)))) never
            [fromPause ePlan
-           ,fromPause (Node.addSharp (unionWith (++) (fst <$> ePauseAndToggle) eInput') (snd <$> ePauseAndToggle) eSecond <$ eSharp)
+           ,fromPause (Node.addSharp bConf (unionWith (++) (fst <$> ePauseAndToggle) eInput') (snd <$> ePauseAndToggle) eSecond <$ eSharp)
            ,fromToggle (Node.toggleSharp <$ toggleSharpE events)
            ])
 
@@ -954,6 +955,7 @@ network ahs = mdo
         where initialPos = replicate (leftDepth t) 0
       user = (\gt p -> isUser p ! Node.toMove (viewNode gt)) <$> bTree <*> bParams
     treeNetwork events
+                bConf
                 (f . initialTree <$> (newGameE events))
                 eMove
                 ePlanFunc

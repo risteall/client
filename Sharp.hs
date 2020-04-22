@@ -1,10 +1,10 @@
-{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards #-}
+{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards, ScopedTypeVariables #-}
 
 module Sharp(SharpVal(..), Eval, flipEval, SharpStatus(..), SharpProcess(status, val), mkSharpProcess, killSharp, killSharps) where
 
 import Data.Unique
 import Reactive.Banana
-import Reactive.Banana.Frameworks
+import Reactive.Banana.Frameworks hiding (register)
 import System.Process
 import Text.Printf
 import Data.Maybe
@@ -22,13 +22,24 @@ import System.Process
 import System.Process.Internals
 import System.Posix.Signals
 import System.IO.Unsafe
-import Control.Monad
 import Graphics.UI.Gtk(postGUIAsync)
+import Control.Exception
+import Data.AppSettings
 
 import Base
 import Env
 import Settings
 import WidgetValue
+
+forkBracket :: IO a -> (a -> IO ()) -> (a -> IO c) -> IO a
+forkBracket acquire release work = mask $ \restore -> do
+  x <- acquire
+  forkIO $ do
+    restore (work x) `onException` release x
+    release x
+  return x
+
+----------------------------------------------------------------
 
 data SharpVal = SharpVal
   {sharpDepth :: String
@@ -78,37 +89,101 @@ parseSharp p s
   | otherwise = Nothing
   where r = mkRegex "^ID Depth:[[:space:]]+([^[:space:]]+).*Eval:[[:space:]]+([^[:space:]]+).*PV:[[:space:]]+(.*)"
 
-runSharp :: [GenMove] -> Position -> [Move] -> Maybe ((SharpVal -> IO ()) -> IO () -> IO ProcessHandle)
-runSharp movelist position excludes = run <$> f <*> getConf sharpExe
+----------------------------------------------------------------
+
+sharps :: MVar [(Unique, ProcessHandle, IORef UTCTime)]
+sharps = unsafePerformIO $ newMVar []
+
+register :: ProcessHandle -> IO Unique
+register ph = do
+  u <- newUnique
+  t <- getCurrentTime >>= newIORef
+  l <- modifyMVar sharps (\ss -> return ((u, ph, t) : ss, ss))
+  n <- getConf' maxSharps
+  mapM_ killPH . take (length l - n + 1) . map fst . sortOn snd
+    =<< mapM (\(_, ph', t') -> (ph',) <$> readIORef t') l
+  return u
+
+unregister :: Unique -> IO ()
+unregister u = modifyMVar_ sharps (\ss -> return (filter (\(u', _, _) -> u' /= u) ss))
+  
+useSharp :: Unique -> IO ()
+useSharp u = readMVar sharps >>= f
   where
-    run (s, n) sharp valCallback stoppedCallback = do
-      tmpDir <- getTemporaryDirectory
-      (tmp, h) <- openTempFile tmpDir ".movelist"
-      hPutStr h s
-      hClose h
-      (_, Just hout, _, ph) <-
-        createProcess (proc sharp (["analyze", tmp, n, "-threads", show (getConf sharpThreads)]
-                                   ++ if null excludes
-                                        then []
-                                        else ["-exclude", intercalate ", " (map show excludes)]))
-          {std_out = CreatePipe}
-      forkIO $ do
-        s <- hGetContents hout
-        for (lines s) $ \l -> do
-          putStrLn l
-          maybe (return ()) valCallback $ parseSharp position l
-        waitForProcess ph
-        removeFile tmp
-        putStrLn "Stopped"
-        stoppedCallback
+    f l = case mapMaybe (\(u', _, t) -> if u' == u then Just t else Nothing) l of
+      t:_ -> getCurrentTime >>= writeIORef t
+      _ -> return ()
 
-      return ph
+-- !!!!!! shouldn't use internal; or at least figure out version dependency
+signalPH :: ProcessHandle -> Signal -> IO ()
+signalPH (ProcessHandle m _ _) s = readMVar m >>= \case
+  OpenHandle pid -> signalProcess s pid
+  _ -> return ()
 
+killPH :: ProcessHandle -> IO ()
+killPH ph = do
+  terminateProcess ph
+  signalPH ph sigCONT
+
+killSharp :: SharpProcess -> IO ()
+killSharp = killPH . ph
+
+killSharps :: IO ()
+killSharps = do
+  takeMVar sharps >>= mapM_ (\(_, ph, _) -> killPH ph)
+  putMVar sharps []
+
+----------------------------------------------------------------
+
+runSharp :: [GenMove] -> Position -> [Move] -> (SharpVal -> IO ()) -> IO () -> IO (Maybe (ProcessHandle, Unique))
+runSharp movelist position excludes valCallback stoppedCallback = do
+    sharp <- getConf' sharpExe
+    catch (sequence $ run <$> f <*> sharp)
+      (\(e :: IOException) -> do {print e; return Nothing})
+  where
     nMoves = length movelist
     f | nMoves < 2 = Nothing
-      | otherwise = Just (unlines (zipWith (\move n -> moveNum n ++ " " ++ showGenMove move) movelist [0..])
-                         ,moveNum nMoves
-                         )
+      | otherwise = Just (unlines (zipWith (\move n -> moveNum n ++ " " ++ showGenMove move)
+                                     movelist [0..])
+                         ,moveNum nMoves)
+
+    run (s, n) sharp = do
+      tmpDir <- getTemporaryDirectory
+
+      bracketOnError
+          (openTempFile tmpDir ".movelist")
+          (\(tmp, h) -> do
+            hClose h
+            removeFile tmp
+          ) $ \(tmp, h) -> do
+        hPutStr h s
+        hClose h
+        nThreads <- getConf' sharpThreads
+        ((_, _, _, ph), u) <- forkBracket
+            (do
+               x@(_, _, _, ph) <-
+                 createProcess (proc sharp (["analyze", tmp, n, "-threads", show nThreads]
+                                            ++ if null excludes
+                                                  then []
+                                                  else ["-exclude", intercalate ", " (map show excludes)]))
+                   {std_out = CreatePipe}
+               u <- register ph
+               return (x, u)
+            )
+            (\(x, u) -> do
+               cleanupProcess x
+               unregister u
+               removeFile tmp
+               putStrLn "Stopped"
+               stoppedCallback
+            ) $ \((_, Just hout, _, ph), _) -> do
+          s <- hGetContents hout
+          for (lines s) $ \l -> do
+            putStrLn l
+            maybe (return ()) valCallback $ parseSharp position l
+          waitForProcess ph
+
+        return (ph, u)
 
 ----------------------------------------------------------------
 
@@ -124,8 +199,6 @@ data SharpProcess = SharpProcess
   ,ph :: ProcessHandle
   ,status :: Behavior SharpStatus
   ,val :: Behavior (Maybe SharpVal)
---  ,runtime :: Behavior Int
-  ,used :: IORef UTCTime
   }
 
 instance Eq SharpProcess where
@@ -133,66 +206,35 @@ instance Eq SharpProcess where
 
 ----------------------------------------------------------------
 
--- !!!!!! shouldn't use internal; or at least figure out version dependency
-signalPH :: ProcessHandle -> Signal -> IO ()
-signalPH (ProcessHandle m _ _) s = readMVar m >>= \case
-  OpenHandle pid -> signalProcess s pid
-  _ -> return ()
+mkSharpProcess :: [GenMove] -> Position -> [Move] -> Behavior Conf -> Event () -> Event () -> Event () -> MomentIO (Maybe SharpProcess)
+mkSharpProcess movelist position excludes bConf ePause eToggle eSecond = do
+  (eVal, valFire) <- newEvent
+  val <- stepper Nothing (Just <$> eVal)
+  (eStopped, stoppedFire) <- newEvent
 
-sharps :: IORef [SharpProcess]
-sharps = unsafePerformIO $ newIORef []
-
-killSharp :: SharpProcess -> IO ()
-killSharp SharpProcess{ph} = do
-  terminateProcess ph
-  signalPH ph sigCONT
-
-registerSharp :: SharpProcess -> IO ()
-registerSharp sp = do
-  sharps' <- atomicModifyIORef' sharps (\ss -> (sp : ss, ss))
-  when (length sharps' >= getConf maxSharps) $ do
-    (s:_) <- map fst . sortOn snd <$> mapM (\s -> (s,) <$> readIORef (used s)) sharps'
-    killSharp s
-
-killSharps :: IO ()
-killSharps = do
-  readIORef sharps >>= mapM_ killSharp
-  writeIORef sharps []
-
-----------------------------------------------------------------
-
-mkSharpProcess :: [GenMove] -> Position -> [Move] -> Maybe (Event () -> Event () -> Event () -> MomentIO SharpProcess)
-mkSharpProcess movelist position excludes = f <$> runSharp movelist position excludes
-  where
-    f :: ((SharpVal -> IO ()) -> IO () -> IO ProcessHandle) -> Event () -> Event () -> Event () -> MomentIO SharpProcess
-    f run ePause eToggle eSecond = mdo
-      (eVal, valFire) <- newEvent
-      val <- stepper Nothing (Just <$> eVal)
-      (eStopped, stoppedFire) <- newEvent
-      ph <- liftIO $ run (postGUIAsync . valFire) (postGUIAsync (stoppedFire ()))
+  let
+    f :: (ProcessHandle, Unique) -> MomentIO SharpProcess
+    f (ph, unique) = mdo
       let eSecond' = whenE ((== Running) <$> status) eSecond
       bTimer <- accumB 0 ((+ 1) <$ eSecond')
-      let eGo = whenE ((== Paused) <$> status) eToggle
-          eNoGo = foldr (unionWith const) never
-                        [ePause
-                        ,whenE ((== Running) <$> status) eToggle
-                        ,whenE ((== getConf sharpTimeLimit) . Just <$> bTimer) eSecond'
-                        ,() <$ filterE ((== (maybe "" show (getConf sharpDepthLimit))) . sharpDepth) eVal
-                        ]
-
-      used <- liftIO $ getCurrentTime >>= newIORef
-      reactimate $ (getCurrentTime >>= writeIORef used) <$ eGo
-
+      let
+        g c v = case (getSetting' c sharpDepthLimit, readMaybe (sharpDepth v)) of
+          (Just l, Just d) -> d >= l
+          _ -> False
+        eGo = whenE ((== Paused) <$> status) eToggle
+        eNoGo = foldr (unionWith const) never
+                  [ePause
+                  ,whenE ((== Running) <$> status) eToggle
+                  ,whenE ((\c t -> maybe False (<= t) (getSetting' c sharpTimeLimit)) <$> bConf <*> bTimer) eSecond'
+                  ,() <$ filterApply (g <$> bConf) eVal
+                  ]
       status <- accumB Running $ unions [setStatus True <$ eGo
-                                         ,setStatus False <$ eNoGo
-                                         ,const Stopped <$ eStopped
-                                         ]
-      reactimate $ do {signalPH ph sigCONT; putStrLn "Started"} <$ eGo
+                                        ,setStatus False <$ eNoGo
+                                        ,const Stopped <$ eStopped
+                                        ]
+      reactimate $ do {signalPH ph sigCONT; useSharp unique; putStrLn "Started"} <$ eGo
       reactimate $ do {signalPH ph sigSTOP; putStrLn "Paused"} <$ eNoGo
-      reactimate $ atomicModifyIORef' sharps (\ss -> (filter (/= sp) ss, ())) <$ eStopped
 
-      unique <- liftIO newUnique
+      return SharpProcess{..}
 
-      let sp = SharpProcess{..}
-      liftIO $ registerSharp sp
-      return sp
+  traverse f =<< liftIO (runSharp movelist position excludes (postGUIAsync . valFire) (postGUIAsync (stoppedFire ())))
