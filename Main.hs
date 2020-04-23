@@ -36,6 +36,7 @@ import System.Environment
 import Data.Foldable
 import Language.Haskell.TH.Syntax
 import Lens.Micro
+import System.Random
 
 import Draw
 import qualified Protocol
@@ -648,9 +649,10 @@ playBotCallback = do
   Gtk.set l [miscXalign := 0]
   containerAdd u l
 
-  goldButton <- radioButtonNewWithLabel "Gold"
-  silverButton <- radioButtonNewWithLabelFromWidget goldButton "Silver"
-  mapM_ (containerAdd u) [goldButton, silverButton]
+  randomButton <- radioButtonNewWithLabel "Random"
+  goldButton <- radioButtonNewWithLabelFromWidget randomButton "Gold"
+  silverButton <- radioButtonNewWithLabelFromWidget randomButton "Silver"
+  mapM_ (containerAdd u) [randomButton, goldButton, silverButton]
 
   bots <- botLadderBots
   let speeds = ["Lightning", "Blitz", "Fast", "P2", "P1", "CC"]
@@ -676,7 +678,9 @@ playBotCallback = do
       Nothing -> return ()
       Just iter -> treeModelGetPath ts iter >>= treeStoreGetValue ts >>= \case
         Left _ -> return ()
-        Right bot -> fmap fst . find snd . zip [Gold, Silver] <$> mapM toggleButtonGetActive [goldButton, silverButton] >>= \case
+        Right bot -> mapM toggleButtonGetActive [randomButton, goldButton, silverButton]
+                       >>= sequence . fmap fst . find snd . zip [(\b -> if b then Gold else Silver) <$> randomIO, return Gold, return Silver]
+                       >>= \case
           Nothing -> return ()
           Just c -> do
             widgetDestroy d

@@ -93,7 +93,7 @@ declareSettings "generalSettings"
   ,("killPlans", [t|Bool|], [|True|], [|defaultConfWidget True "Kill plans at current position when move comes in"|])
   ,("pieceSet", [t|PieceSet|], [|ThreeD|], [|defaultConfWidget False "Piece set"|])
   ,("arrowWidth", [t|Double|], [|0.12|], [|defaultConfWidget False "Arrow width"|])
-  ,("flashTimes", [t|Maybe [Int]|], [|Just [5, 10, 15]|], [|defaultConfWidget False "Flash times"|])
+  ,("flashTimes", [t|Maybe [Int]|], [|Just [5, 15]|], [|defaultConfWidget False "Flash times"|])
   ]
 
 --sharpSettings :: [ConfWidget]
