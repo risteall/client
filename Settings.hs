@@ -93,6 +93,7 @@ declareSettings "generalSettings"
   ,("killPlans", [t|Bool|], [|True|], [|defaultConfWidget True "Kill plans at current position when move comes in"|])
   ,("pieceSet", [t|PieceSet|], [|ThreeD|], [|defaultConfWidget False "Piece set"|])
   ,("arrowWidth", [t|Double|], [|0.12|], [|defaultConfWidget False "Arrow width"|])
+  ,("flashTimes", [t|Maybe [Int]|], [|Just [5, 10, 15]|], [|defaultConfWidget False "Flash times"|])
   ]
 
 --sharpSettings :: [ConfWidget]
@@ -123,6 +124,7 @@ declareSettings "colourSettings'" $ map (\(a,b,c,s) -> (a,b,c, [|liftA2 (,) sett
   ,("goldArrowColour", [t|RGB Double|], [|RGB 1 0 0|], "Gold arrow")
   ,("silverArrowColour", [t|RGB Double|], [|RGB 0 0 1|], "Silver arrow")
   ,("invisibleArrowColour", [t|RGB Double|], [|RGB 0 0.9 0|], "Invisible arrow")
+  ,("flashColour", [t|RGB Double|], [|RGB 1 0 0|], "Flash")
   ]
 
 defaultColours :: Conf

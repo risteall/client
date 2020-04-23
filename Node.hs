@@ -1,4 +1,4 @@
-{-# LANGUAGE NamedFieldPuns, LambdaCase, DataKinds, GADTs, ScopedTypeVariables, KindSignatures, RankNTypes, TypeApplications, RecursiveDo #-}
+{-# LANGUAGE NamedFieldPuns, LambdaCase, DataKinds, GADTs, ScopedTypeVariables, KindSignatures, RankNTypes, TypeApplications, RecursiveDo, ImplicitParams #-}
 
 module Node where
 
@@ -71,7 +71,7 @@ mkRegularNode node move position times = Node
     }
   }
 
-mkSharpNode :: HasRegular r => [Move] -> Maybe (Node r) -> Behavior Conf -> Event () -> Event () -> Event () -> MomentIO (Maybe (Node 'Sharp))
+mkSharpNode :: (?env :: Env, HasRegular r) => [Move] -> Maybe (Node r) -> Behavior Conf -> Event () -> Event () -> Event () -> MomentIO (Maybe (Node 'Sharp))
 mkSharpNode excludes node bConf e1 e2 e3 =
     fmap (fmap f) $ mkSharpProcess m p excludes bConf e1 e2 e3
   where
@@ -185,14 +185,14 @@ movelistEntry n@(SomeNode n') = case getContentS n of
                  (show $ (case posToMove (prev n') of Gold -> id; Silver -> flipEval) (sharpEval v))
                  (sharpDepth v)
 
-nodeColour :: SomeNode -> Behavior (Maybe (IO (RGB Double)))
+nodeColour :: (?env :: Env) => SomeNode -> Behavior (Maybe (IO (RGB Double)))
 nodeColour n = case getContentS n of
     Left _ -> pure Nothing
     Right s -> Just . g <$> status s
   where
-    g Running = getConf' runningSharpColour
-    g Paused = getConf' pausedSharpColour
-    g Stopped = getConf' stoppedSharpColour
+    g Running = getConf runningSharpColour
+    g Paused = getConf pausedSharpColour
+    g Stopped = getConf stoppedSharpColour
 
 ----------------------------------------------------------------
 
@@ -217,7 +217,7 @@ addFromRegular f gt = sleepAtView gt >>= \case
     Nothing -> return (gt, Nothing)
     Just x -> (\n -> (treePlan n gt', s)) <$> x
 
-addSharp :: Behavior Conf -> Event [SharpProcess] -> Event [SharpProcess] -> Event () -> GameTree SomeNode -> MomentIO (GameTree SomeNode, Maybe SharpProcess)
+addSharp :: (?env :: Env) => Behavior Conf -> Event [SharpProcess] -> Event [SharpProcess] -> Event () -> GameTree SomeNode -> MomentIO (GameTree SomeNode, Maybe SharpProcess)
 addSharp bConf ePause eToggle eSecond gt = sleepAtView gt >>= \case
     Nothing -> return (gt, Nothing)
     Just (gt', s) -> do

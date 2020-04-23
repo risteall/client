@@ -1,27 +1,20 @@
-{-# LANGUAGE LambdaCase, TemplateHaskell, ScopedTypeVariables, DataKinds #-}
+{-# LANGUAGE TemplateHaskell, ImplicitParams #-}
 
 module Env where
 
 import Graphics.UI.Gtk hiding (get)
-import Reactive.Banana.Frameworks
 import Data.Array.IArray
 import Graphics.Rendering.Cairo
-import Data.IORef
 import Control.Concurrent.STM
 import Data.Unique
 import Data.AppSettings
-import System.IO.Unsafe
-import System.Process
-import Data.Maybe
-import Data.List
 import qualified Data.Map.Strict as Map
 
-import qualified Protocol
-import Protocol (arimaaPost, Gameroom, PlayInfo, getFields, GameInfo, reserveSeat, sit)
+import Protocol (Gameroom, GameInfo)
 import Scrape
-import Base
+import Base (Colour)
 import Templates
-import Misc
+import Misc (PieceSet)
 
 data Widgets = Widgets
   {window :: Window
@@ -56,8 +49,8 @@ data Env = Env
   ,setDrawTree :: (DrawingArea -> Render ()) -> IO ()
   ,botLadderBotsRef :: TVar (IO [BotLadderBot])
   ,statusStack :: TVar [(Unique, String)]
-  ,myGames :: TVar [Protocol.GameInfo]
-  ,openGames :: TVar [Protocol.GameInfo]
+  ,myGames :: TVar [GameInfo]
+  ,openGames :: TVar [GameInfo]
   ,liveGames :: TVar [ScrapeGameInfo]
   ,postalGames :: TVar [ScrapeGameInfo]
   ,conf :: TVar Conf
@@ -68,16 +61,10 @@ data Env = Env
   ,trapMask :: Surface
   }
 
-globalEnv :: IORef Env
-globalEnv = unsafePerformIO $ newIORef undefined
+get :: (?env :: Env) => (Env -> a) -> a
+get f = f ?env
 
-get :: (Env -> a) -> a
-get f = unsafePerformIO $ f <$> readIORef globalEnv
-
-getConf' :: Read a => Setting a -> IO a
-getConf' s = do
+getConf :: (?env :: Env, Read a) => Setting a -> IO a
+getConf s = do
   c <- readTVarIO (get conf)
   return $ getSetting' c s
-
-getConf :: Read a => Setting a -> a
-getConf = unsafePerformIO . getConf'

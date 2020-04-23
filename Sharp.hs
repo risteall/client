@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards, ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards, ScopedTypeVariables, ImplicitParams #-}
 
 module Sharp(SharpVal(..), Eval, flipEval, SharpStatus(..), SharpProcess(status, val), mkSharpProcess, killSharp, killSharps) where
 
@@ -94,12 +94,12 @@ parseSharp p s
 sharps :: MVar [(Unique, ProcessHandle, IORef UTCTime)]
 sharps = unsafePerformIO $ newMVar []
 
-register :: ProcessHandle -> IO Unique
+register :: (?env :: Env) => ProcessHandle -> IO Unique
 register ph = do
   u <- newUnique
   t <- getCurrentTime >>= newIORef
   l <- modifyMVar sharps (\ss -> return ((u, ph, t) : ss, ss))
-  n <- getConf' maxSharps
+  n <- getConf maxSharps
   mapM_ killPH . take (length l - n + 1) . map fst . sortOn snd
     =<< mapM (\(_, ph', t') -> (ph',) <$> readIORef t') l
   return u
@@ -135,9 +135,9 @@ killSharps = do
 
 ----------------------------------------------------------------
 
-runSharp :: [GenMove] -> Position -> [Move] -> (SharpVal -> IO ()) -> IO () -> IO (Maybe (ProcessHandle, Unique))
+runSharp :: (?env :: Env) => [GenMove] -> Position -> [Move] -> (SharpVal -> IO ()) -> IO () -> IO (Maybe (ProcessHandle, Unique))
 runSharp movelist position excludes valCallback stoppedCallback = do
-    sharp <- getConf' sharpExe
+    sharp <- getConf sharpExe
     catch (sequence $ run <$> f <*> sharp)
       (\(e :: IOException) -> do {print e; return Nothing})
   where
@@ -158,7 +158,7 @@ runSharp movelist position excludes valCallback stoppedCallback = do
           ) $ \(tmp, h) -> do
         hPutStr h s
         hClose h
-        nThreads <- getConf' sharpThreads
+        nThreads <- getConf sharpThreads
         ((_, _, _, ph), u) <- forkBracket
             (do
                x@(_, _, _, ph) <-
@@ -206,7 +206,7 @@ instance Eq SharpProcess where
 
 ----------------------------------------------------------------
 
-mkSharpProcess :: [GenMove] -> Position -> [Move] -> Behavior Conf -> Event () -> Event () -> Event () -> MomentIO (Maybe SharpProcess)
+mkSharpProcess :: (?env :: Env) => [GenMove] -> Position -> [Move] -> Behavior Conf -> Event () -> Event () -> Event () -> MomentIO (Maybe SharpProcess)
 mkSharpProcess movelist position excludes bConf ePause eToggle eSecond = do
   (eVal, valFire) <- newEvent
   val <- stepper Nothing (Just <$> eVal)

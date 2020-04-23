@@ -1,6 +1,6 @@
-{-# LANGUAGE LambdaCase, MultiWayIf, TupleSections, ScopedTypeVariables, NamedFieldPuns #-}
+{-# LANGUAGE LambdaCase, MultiWayIf, TupleSections, ScopedTypeVariables, NamedFieldPuns, ImplicitParams #-}
 
-module Draw where
+module Draw(drawNode, drawEmptyBoard, drawSetupIcon, drawCaptures, smallSquare, squareSize, borderWidth, mkTrapMask) where
 
 import Graphics.Rendering.Cairo
 import Data.List
@@ -216,7 +216,7 @@ mkTrapMask radius pow midGradient = do
     surfaceMarkDirty s
     return s
 
-drawTrap :: Conf -> Render ()
+drawTrap :: (?env :: Env) => Conf -> Render ()
 drawTrap conf = do
   case getSetting' conf trapGradient of
     False -> do
@@ -231,9 +231,11 @@ drawTrap conf = do
       setSourceColour $ getSetting' conf trapColour
       withTransform 0 0 (1 / fromIntegral trapMaskSize) $ maskSurface (get trapMask) 0 0
     
-drawEmptyBoard :: Conf -> Render ()
-drawEmptyBoard conf = do
-  setSourceRGB 0 0 0
+drawEmptyBoard :: (?env :: Env) => Bool -> Conf -> Render ()
+drawEmptyBoard flash conf = do
+  if flash
+    then setSourceColour $ getSetting' conf flashColour
+    else setSourceRGB 0 0 0
   paint
   setSourceColour $ getSetting' conf boardColour1
   rectangle 0 0 (fromIntegral boardWidth) (fromIntegral boardHeight)
@@ -285,14 +287,14 @@ drawPiece surface alpha = do
   paintWithAlpha alpha
   restore
 
-drawPieces :: Array Colour Bool -> Board -> (Square -> Square) -> Conf -> Render ()
+drawPieces :: (?env :: Env) => Array Colour Bool -> Board -> (Square -> Square) -> Conf -> Render ()
 drawPieces visible board squareMap conf = forM_ (map (first squareMap) (assocs board)) $ \case
   ((x,y), Just piece@(c,_))
     | visible ! c -> withTransform (fromIntegral x) (fromIntegral y) 1
       $ drawPiece (get icons Map.! getSetting' conf pieceSet ! piece) $ getSetting' conf pieceAlpha
   _ -> return ()
 
-drawSetupPieces :: Colour -> Board -> ShadowBoard -> (Square -> Square) -> Conf -> Render ()
+drawSetupPieces :: (?env :: Env) => Colour -> Board -> ShadowBoard -> (Square -> Square) -> Conf -> Render ()
 drawSetupPieces c board shadowBoard squareMap conf = do
   sequence_ $ zipWith3 (\(x,y) m1 m2 -> maybe (return ())
                                               (withTransform (fromIntegral x) (fromIntegral y) 1)
@@ -340,6 +342,7 @@ drawNonsetup
     (ms :: Maybe MoveSet)
     (visible :: Array Colour Bool)
     (squareMap :: Square -> Square)
+    (flash :: Bool)
     (conf :: Conf)
     (canvas :: DrawingArea)
     = do
@@ -351,7 +354,7 @@ drawNonsetup
   translate borderWidth borderWidth
   scale x x
 
-  drawEmptyBoard conf
+  drawEmptyBoard flash conf
   drawLiveTraps liveTraps squareMap conf
 
   drawPieces (if depth <= 2 && null arrows then listArray (Gold,Silver) (repeat True) else visible)
@@ -409,26 +412,26 @@ drawNonsetup
            Nothing -> return ()
            Just MoveSet{currentCaptures, captures} -> sequence_ $ Map.intersectionWithKey f currentCaptures captures
 
-drawSetup :: Colour -> Board -> ShadowBoard -> (Square -> Square) -> Conf -> DrawingArea -> Render ()
-drawSetup c board sb squareMap conf canvas = do
+drawSetup :: (?env :: Env) => Colour -> Board -> ShadowBoard -> (Square -> Square) -> Bool -> Conf -> DrawingArea -> Render ()
+drawSetup c board sb squareMap flash conf canvas = do
   x <- liftIO $ squareSize canvas
   setSourceRGB 1 1 1
   paint
   translate borderWidth borderWidth
   scale x x
 
-  drawEmptyBoard conf
+  drawEmptyBoard flash conf
 
   drawSetupPieces c board sb squareMap conf
 
-drawNode :: Maybe Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> Conf -> DrawingArea -> Render ())
+drawNode :: (?env :: Env) => Maybe Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> Bool -> Conf -> DrawingArea -> Render ())
 drawNode node
   | Node.setupPhase node
   = fromMaybe (error "wazzock")
       $ Node.useRegular' node $ \n -> pure
-        $ \sb _ _ _ _ squareMap conf -> drawSetup (posToMove (Node.regularPosition n))
+        $ \sb _ _ _ _ squareMap flash conf -> drawSetup (posToMove (Node.regularPosition n))
                                              (posBoard (Node.regularPosition n))
-                                             sb squareMap conf
+                                             sb squareMap flash conf
   | otherwise = f <$> Node.board node <*> ((>>= either (const Nothing) Just) <$> Node.getMove node)
   where
     f board move _ = drawNonsetup (Node.depth node) board move

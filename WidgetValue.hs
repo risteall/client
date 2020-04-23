@@ -75,6 +75,15 @@ instance WidgetValue (Maybe Int) HBox where
 instance WidgetValue Double Entry where
   makeWidget = defaultMakeWidget
 
+instance WidgetValue [Int] Entry where
+  makeWidget = do
+    e <- entryNew
+    entrySetActivatesDefault e True
+    return (e, readMaybe . (\s -> "[" ++ s ++ "]") <$> entryGetText e, entrySetText e . intercalate ", " . map show)
+
+instance WidgetValue (Maybe [Int]) HBox where
+  makeWidget = maybeWidget
+
 enumWidget :: Eq a => [(a, String)] -> IO (HBox, IO (Maybe a), a -> IO ())
 enumWidget l = do
   box <- hBoxNew False 5

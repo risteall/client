@@ -1,7 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, GADTs, DeriveFunctor, TypeApplications, TemplateHaskell #-}
-
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, GADTs, DeriveFunctor, TypeApplications, TemplateHaskell, ImplicitParams #-}
 
 module EventNetwork
   (Request(..), Update(..)
@@ -196,7 +195,7 @@ placeTree forest currentPos = f [([], forest)] 0 (Map.empty, 0)
         width = min treeMaxWidth (treeXGap * nGaps)
         gap = if nGaps == 0 then 0 else width / nGaps
 
-drawTree :: GameTree Node.SomeNode -> Map Int [([Int], Double)] -> Behavior (Render ())
+drawTree :: (?env :: Env) => GameTree Node.SomeNode -> Map Int [([Int], Double)] -> Behavior (Render ())
 drawTree gt offsets = top <$> setColour Nothing [] <*> f (tree gt) []
   where
     top a b = do
@@ -229,14 +228,14 @@ drawTree gt offsets = top <$> setColour Nothing [] <*> f (tree gt) []
     setColour :: Maybe Node.SomeNode -> [Int] -> Behavior (Render ())
     setColour node ix = (>>= flip setSourceColourAlpha alpha) . liftIO <$> colour  -- !!!!!!!!!!!
       where
-        colour | ix == currentPos gt = pure (getConf' currentColour)
-               | ix == viewPos gt = pure (getConf' viewColour)
+        colour | ix == currentPos gt = pure (getConf currentColour)
+               | ix == viewPos gt = pure (getConf viewColour)
                | otherwise = fromMaybe (return c) <$> maybe (pure Nothing) Node.nodeColour node
         c | isPrefixOf ix (currentPos gt) = RGB 0 0 0
           | otherwise = RGB 0 0 0.8
         alpha = if isPrefixOf ix (pathEnd gt) then 1 else 0.5
 
-drawMoves :: GameTree Node.SomeNode -> Double -> Behavior (DrawingArea -> Render ())
+drawMoves :: (?env :: Env) => GameTree Node.SomeNode -> Double -> Behavior (DrawingArea -> Render ())
 drawMoves gt treeWidth = g <$> sequenceA (zipWith f (tail (inits (pathEnd gt))) [0..])
   where
     x = treeWidth + treeMargin
@@ -255,15 +254,15 @@ drawMoves gt treeWidth = g <$> sequenceA (zipWith f (tail (inits (pathEnd gt))) 
             c = if | ix == currentPos gt -> currentColour
                    | even n -> goldColour
                    | otherwise -> silverColour
-          liftIO (getConf' c) >>= setSourceColour
+          liftIO (getConf c) >>= setSourceColour
           f
           when (ix == viewPos gt) $ do
-            liftIO (getConf' viewColour) >>= flip setSourceColourAlpha 0.5
+            liftIO (getConf viewColour) >>= flip setSourceColourAlpha 0.5
             f
         bg2 col x' w = do
           c <- liftIO $ if | Just c <- col -> c
-                           | even n -> toSRGB . blend 0.95 black . toColour <$> getConf' goldColour
-                           | otherwise -> toSRGB . blend 0.95 black . toColour <$> getConf' silverColour
+                           | even n -> toSRGB . blend 0.95 black . toColour <$> getConf goldColour
+                           | otherwise -> toSRGB . blend 0.95 black . toColour <$> getConf silverColour
           setSourceColour c
           rectangle x' (y n) (w - x') treeYGap
           fill
@@ -335,7 +334,8 @@ treeAccum init pures impures = mdo
 ----------------------------------------------------------------
 
 treeNetwork
-  :: Events Event
+  :: (?env :: Env)
+  => Events Event
   -> Behavior Conf
   -> Event (GameTree Node.SomeNode)
   -> Event Node.SomeNode
@@ -610,7 +610,8 @@ data NewGame = forall a. Eq a => NewGame
 --------------------------------------------------------------------------------------------------------------------------------
 
 nextMove
-  :: Behavior (Array Colour Bool)
+  :: (?env :: Env)
+  => Behavior (Array Colour Bool)
   -> Behavior Position
   -> Behavior ShadowBoard
   -> Behavior (Maybe MoveSet)
@@ -641,14 +642,16 @@ nextMove visible view shadow bMoveSet = do
 
 -- includes draw board
 input
-  :: Events Event
+  :: (?env :: Env)
+  => Events Event
   -> Behavior (Array Colour Bool)
   -> Behavior Bool
   -> Event ()
+  -> Behavior Bool
   -> Behavior Conf
   -> Event (Maybe Node.SomeNode)
   -> MomentIO (Behavior (Maybe (GenMove, Position)), Event (), Behavior Bool) -- nextMove, eInput, haveInput
-input events visible flipped eClear bConf eNode = mdo
+input events visible flipped eClear flash bConf eNode = mdo
   let
     squareMap = (\f -> if f then flipSquare else id) <$> flipped
     setup = posSetupPhase <$> view
@@ -699,7 +702,7 @@ input events visible flipped eClear bConf eNode = mdo
   let
     f :: Maybe Node.SomeNode -> Behavior (IO ())
     f node = get setDrawBoard
-               <$> (drawNode node <*> shadow <*> ((\as la -> maybe as (:as) la) <$> bArrows <*> liveArrow) <*> liveTraps <*> bMoveSet <*> visible <*> squareMap <*> bConf)
+               <$> (drawNode node <*> shadow <*> ((\as la -> maybe as (:as) la) <$> bArrows <*> liveArrow) <*> liveTraps <*> bMoveSet <*> visible <*> squareMap <*> flash <*> bConf)
     in reactimateSwitch $ f <$> eNode
 
   let setupLabelsB = (\(ShadowBoard _ remaining _) -> map show $ elems remaining) <$> shadow
@@ -749,7 +752,8 @@ mapSend eRequest (Right (request, x)) = do
   return (unionWith (>>) io io2, isJust <$> k)
   
 requests
-  :: Events Event
+  :: (?env :: Env)
+  => Events Event
   -> Event NewGame
   -> Behavior GameState
   -> Behavior (GameTree Node.SomeNode)
@@ -828,7 +832,8 @@ move gameState eUpdate bTree bClocks = eMove
           Right p -> Node.SomeNode $ Node.mkRegularNode r move p ((,0) <$> t)
 
 doClocks
-  :: Event NewGame
+  :: (?env :: Env)
+  => Event NewGame
   -> Behavior GameParams
   -> Behavior GameState
   -> Event Update
@@ -894,7 +899,19 @@ Rank2.TH.deriveFunctor ''Events
 Rank2.TH.deriveFoldable ''Events
 Rank2.TH.deriveTraversable ''Events
 
-network :: Events AddHandler -> MomentIO ()
+zipB :: Behavior a -> MomentIO (Event (a, a))
+zipB b = do
+  (e, h) <- newEvent
+  c <- changes b
+  reactimate' $ (\b c -> h <$> ((b,) <$> c)) <$> b <@> c
+  return e
+
+eFlash :: Behavior GameParams -> Behavior Clocks -> Behavior Conf -> MomentIO (Event ())
+eFlash params clocks bConf = do
+  e <- zipB ((\p cl -> timeAvailable (timeControl p) (state cl) - used cl) <$> params <*> clocks)
+  return $ void $ filterApply ((\c (old, new) -> isJust (find (\n -> new <= n && old > n) (fromMaybe [] (getSetting' c flashTimes)))) <$> bConf) e
+
+network :: (?env :: Env) => Events AddHandler -> MomentIO ()
 network ahs = mdo
   events <- Rank2.traverse fromAddHandler ahs
 
@@ -926,11 +943,20 @@ network ahs = mdo
     return $ (\(seeFriendly, seeEnemy) params -> mapColourArray (\c -> if isUser params ! c then seeFriendly else seeEnemy))
                 <$> bBlind <*> bParams
 
-  (bNextMove, eInput, haveInput) <- input events bVisible bFlipped eClear bConf eNode
+  (bNextMove, eInput, haveInput) <- input events bVisible bFlipped eClear flash bConf eNode
 
   requests events (newGameE events) bGameState bTree bNextMove bParams
 
   bClocks <- doClocks (newGameE events) bParams bGameState eUpdate (tick events) bFlipped
+
+  flash <- do
+    eFlash' <- fmap (foldr (unionWith const) never) $ forM [Gold, Silver] $ \c ->
+      whenE ((\p -> isUser p ! c) <$> bParams)
+        <$> eFlash bParams (bClocks ! c) bConf
+    flashCountdown <- accumB 0 $ unions [const 3 <$ eFlash'
+                                       ,max 0 . subtract 1 <$ tick events
+                                       ]
+    return $ (> 0) <$> flashCountdown
 
   let
     eMove = move bGameState eUpdate bTree bClocks

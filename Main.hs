@@ -1,6 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds, TypeApplications, DeriveTraversable, DeriveLift, TemplateHaskell #-}
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds, TypeApplications, DeriveTraversable, DeriveLift, TemplateHaskell, ImplicitParams #-}
 
 import Data.Array.IArray
 import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle)
@@ -63,8 +63,9 @@ deriving instance Read Modifier
 declareKeys
   [("sendE", [], "s", "Send move", [|Just ((`onS` buttonActivated) . sendButton)|])
   ,("resignE", [Gtk.Control], "r", "Resign", [|Just ((`onS` buttonActivated) . resignButton)|])
-  ,("sharpE", [], "x", "Run Sharp", [|Nothing|])
   ,("planE", [], "space", "Enter plan move", [|Nothing|])
+  ,("sharpE", [], "x", "Run Sharp", [|Nothing|])
+  ,("toggleSharpE", [], "p", "Pause and unpause Sharp", [|Nothing|])
   ,("clearE", [], "Escape", "Clear arrows", [|Nothing|])
   ,("prevE", [], "Up", "Previous move", [|Nothing|])
   ,("nextE", [], "Down", "Next move", [|Nothing|])
@@ -77,9 +78,8 @@ declareKeys
   ,("deleteLineE", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", [|Nothing|])
   ,("deleteAllE", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", [|Nothing|])
   ,("deleteFromHereE", [], "Delete", "Remove plans starting at current position", [|Nothing|])
-  ,("toggleSharpE", [], "p", "Pause and unpause Sharp", [|Nothing|])
-  ,("toggleFullscreenE", [], "F11", "Toggle fullscreen", [|Nothing|])
   ,("copyMovelistE", [Gtk.Control], "c", "Copy movelist", [|Nothing|])
+  ,("toggleFullscreenE", [], "F11", "Toggle fullscreen", [|Nothing|])
   ,("dummyGameE", [Gtk.Control], "d", "Dummy game", [|Nothing|])
   ]
 
@@ -89,7 +89,7 @@ anyM f = foldr g (return False)
           True -> return True
           False -> y
 
-initKeyActions :: Widgets -> IO (Keys (AddHandler ()))
+initKeyActions :: (?env :: Env) => Widgets -> IO (Keys (AddHandler ()))
 initKeyActions widgets = do
   l <- mapM (\(s,_,mf) -> (s,mf,) <$> newAddHandler) keys
   forM_ l $ \(_, mf, (_, fire)) -> forM_ mf $ \f -> register (f widgets) fire
@@ -98,7 +98,7 @@ initKeyActions widgets = do
     m <- eventModifier
     let
       f (s, _, (_, fire)) = do
-        (m', k') <- getConf' s
+        (m', k') <- getConf s
         if k == k' && elem m (permutations m')
           then do {fire (); return True}
           else return False
@@ -123,29 +123,27 @@ onE o s k = AddHandler $ \h -> do
 
 ----------------------------------------------------------------
 
-botLadderBots :: IO [BotLadderBot]
+botLadderBots :: (?env :: Env) => IO [BotLadderBot]
 botLadderBots = join $ readTVarIO (get botLadderBotsRef)
 
-gameroom :: IO Gameroom
+gameroom :: (?env :: Env) => IO Gameroom
 gameroom = readTVarIO (get gameroomRef) >>= \case
   Just g -> return g
   Nothing -> do
-    u <- getConf' username
-    p <- getConf' password
+    u <- getConf username
+    p <- getConf password
     case (u, p) of
       (Just u'@(_:_), Just p'@(_:_)) -> Protocol.login u' p'
       _ -> error "Can't get gameroom"
 
 ----------------------------------------------------------------
 
-setUsernameAndPassword :: String -> String -> IO ()
+setUsernameAndPassword :: (?env :: Env) => String -> String -> IO ()
 setUsernameAndPassword u p = do
   c <- readTVarIO (get conf)
   get setConf $ setSetting (setSetting c username (Just u)) password (Just p)
   atomically $ writeTVar (get gameroomRef) Nothing   -- bad: should logout
   getBotLadder
-
-----------------------------------------------------------------
 
 ----------------------------------------------------------------
   
@@ -183,13 +181,13 @@ boardCoordinates widget (x,y) = fst <$> boardCoordinates' widget (x,y)
 background :: IO a -> (a -> IO ()) -> IO ()
 background x y = void $ forkIO $ x >>= postGUIAsync . y
 
-showStatus :: IO ()
+showStatus :: (?env :: Env) => IO ()
 showStatus = do
   readTVarIO (get statusStack) >>= \case
     [] -> labelSetText (get (statusLabel . widgets)) ""
     (_,m):_ -> labelSetText (get (statusLabel . widgets)) m
 
-setStatus :: String -> Maybe Int -> IO (IO ())
+setStatus :: (?env :: Env) => String -> Maybe Int -> IO (IO ())
 setStatus message timeout = do
   u <- newUnique
   atomically $ modifyTVar (get statusStack) $ ((u, message) :)
@@ -202,7 +200,7 @@ setStatus message timeout = do
     remove
   return remove
 
-withStatus :: String -> IO a -> IO a
+withStatus :: (?env :: Env) => String -> IO a -> IO a
 withStatus message action = do
   remove <- setStatus message Nothing
   finally action remove
@@ -232,7 +230,7 @@ sendMessage ch r m = atomically $ do
 --       (c', m) -> (c', (c',) <$> m)
 --     (toMove', l) = mapAccumL f' toMove $ map words $ splitOn "\DC3" moveString
 
-alert :: String -> IO ()
+alert :: (?env :: Env) => String -> IO ()
 alert s = do
   x <- newEmptyMVar
   postGUIAsync $ do
@@ -244,7 +242,7 @@ alert s = do
     return ()
   takeMVar x
 
-toServer :: PlayInfo -> String -> TChan (Request, Int) -> TChan Int -> IO ()
+toServer :: (?env :: Env) => PlayInfo -> String -> TChan (Request, Int) -> TChan Int -> IO ()
 toServer (gsurl, sid) auth requestChan responseChan = forever $ try f >>= \case
     Left (Protocol.ServerError e) -> alert e
     Right _ -> return ()
@@ -299,7 +297,7 @@ getUpdates response started updateChan = do
 
   return (started || start, finished)
 
-fromServer :: PlayInfo -> [(String, String)] -> Bool -> TChan Update -> IO ()
+fromServer :: (?env :: Env) => PlayInfo -> [(String, String)] -> Bool -> TChan Update -> IO ()
 fromServer (gsurl, sid) response started updateChan = do
   let [lc, ml, cl] = getFields ["lastchange", "moveslength", "chatlength"] response
   
@@ -324,7 +322,7 @@ channelEvent chan = do
     return ah
   fromAddHandler ah
 
-setServerGame :: GameInfo -> IO ()
+setServerGame :: (?env :: Env) => GameInfo -> IO ()
 setServerGame gameInfo = handle (\(Protocol.ServerError s) -> alert s) $ do
   gameroom <- gameroom
   ri <- reserveSeat gameroom gameInfo
@@ -360,7 +358,7 @@ setServerGame gameInfo = handle (\(Protocol.ServerError s) -> alert s) $ do
                   return (b, e))
               (mapM_ killThread [t1, t2])
 
-watchGame :: String -> IO ()
+watchGame :: (?env :: Env) => String -> IO ()
 watchGame gid = handle (\(Protocol.ServerError s) -> alert s) $ do
   gameroom <- gameroom
   ri <- Protocol.reserveView gameroom gid
@@ -398,7 +396,7 @@ watchGame gid = handle (\(Protocol.ServerError s) -> alert s) $ do
 
 ----------------------------------------------------------------
 
-updateServerGames :: IO ()
+updateServerGames :: (?env :: Env) => IO ()
 updateServerGames = forever $ do
   gameroom <- gameroom
   Protocol.myGames gameroom >>= atomically . writeTVar (get myGames)
@@ -420,7 +418,7 @@ makeTreeStore forest l = do
     cellLayoutSetAttributes col cr ts g
   return (ts, tv)
 
-serverGameCallback :: [Protocol.GameInfo] -> IO ()
+serverGameCallback :: (?env :: Env) => [Protocol.GameInfo] -> IO ()
 serverGameCallback games = do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)
@@ -460,7 +458,7 @@ serverGameCallback games = do
 
   return ()
 
-watchGameCallback :: IO ()
+watchGameCallback :: (?env :: Env) => IO ()
 watchGameCallback = do
   liveGames <- readTVarIO (get liveGames)
   postalGames <- readTVarIO (get postalGames)
@@ -474,20 +472,15 @@ watchGameCallback = do
   dialogAddButton d "Watch game" ResponseOk
   u <- castToContainer <$> dialogGetContentArea d
 
-  (ts, tv) <- makeTreeStore [Node (Left "Live games") (map (\g -> Node (Right g) []) liveGames)
-                            ,Node (Left "Postal games") (map (\g -> Node (Right g) []) postalGames)
-                            ]
-                            [("Gold", \x -> [cellText := either id (\lgi -> printf "%s (%d)"
-                                                                                   (giNames lgi ! Gold)
-                                                                                   (giRatings lgi ! Gold))
-                                                                x])
-                            ,("Silver", \x -> [cellText := either (const "") (\lgi -> printf "%s (%d)"
-                                                                                             (giNames lgi ! Silver)
-                                                                                             (giRatings lgi ! Silver))
-                                                                  x])
-                            ,("Time control", \x -> [cellText := either (const "") (show . giTimeControl) x])
-                            ,("Rated", \x -> [cellText := either (const "") (\lgi -> if giRated lgi then "R" else "U") x])
-                            ]
+  (ts, tv) <- makeTreeStore
+      [Node (Left "Live games") (map (\g -> Node (Right g) []) liveGames)
+      ,Node (Left "Postal games") (map (\g -> Node (Right g) []) postalGames)
+      ]
+    [("Gold", \x -> [cellText := either id (\lgi -> printf "%s (%d)" (giNames lgi ! Gold) (giRatings lgi ! Gold)) x])
+    ,("Silver", \x -> [cellText := either (const "") (\lgi -> printf "%s (%d)" (giNames lgi ! Silver) (giRatings lgi ! Silver)) x])
+    ,("Time control", \x -> [cellText := either (const "") (show . giTimeControl) x])
+    ,("Rated", \x -> [cellText := either (const "") (\lgi -> if giRated lgi then "R" else "U") x])
+    ]
 
   treeViewExpandAll tv
 
@@ -512,7 +505,7 @@ watchGameCallback = do
 
   return ()
 
-recentGamesCallback :: IO ()
+recentGamesCallback :: (?env :: Env) => IO ()
 recentGamesCallback = background (withStatus "Fetching games" (getGames "http://arimaa.com/arimaa/gameroom/recentgames.cgi")) $ \games -> do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)
@@ -525,7 +518,7 @@ recentGamesCallback = background (withStatus "Fetching games" (getGames "http://
   u <- castToContainer <$> dialogGetContentArea d
 
   (ts, tv) <- makeTreeStore
-    (map (\g -> Node g []) games)
+      (map (\g -> Node g []) games)
     [("Gold", \g -> [cellText := (printf "%s%s (%d)" (if giWinner g == Just Gold then "*" else "") (giNames g ! Gold) (giRatings g ! Gold) :: String)])
     ,("Silver", \g -> [cellText := (printf "%s%s (%d)" (if giWinner g == Just Silver then "*" else "") (giNames g ! Silver) (giRatings g ! Silver) :: String)])
     ,("Time control", \g -> [cellText := show (giTimeControl g)])
@@ -556,7 +549,7 @@ recentGamesCallback = background (withStatus "Fetching games" (getGames "http://
 
 ----------------------------------------------------------------
 
-makeDialog' :: WidgetClass w => w -> String -> (IO () -> IO ()) -> IO ()
+makeDialog' :: (?env :: Env, WidgetClass w) => w -> String -> (IO () -> IO ()) -> IO ()
 makeDialog' w buttonText f = do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)]
@@ -570,13 +563,13 @@ makeDialog' w buttonText f = do
     _ -> widgetDestroy d
   return ()
 
-makeDialog :: WidgetClass w => w -> String -> IO Bool -> IO ()
+makeDialog :: (?env :: Env, WidgetClass w) => w -> String -> IO Bool -> IO ()
 makeDialog w buttonText f = do
   makeDialog' w buttonText $ \kill -> f >>= \case
     True -> kill
     False -> return ()
 
-viewGameCallback :: IO ()
+viewGameCallback :: (?env :: Env) => IO ()
 viewGameCallback = do
   (w,get,_) <- labelledAccessor "Enter game id:"
   makeDialog' w "View game" $ \killDialog -> get >>= \case
@@ -592,7 +585,7 @@ expandGame tc moves = snd <$> mapAccumLM f (Nothing, Just (initialReserve tc)) m
                              in ((Just n', r'), n'))
                         <$> playGenMove (Node.regularPosition n) m
 
-viewGame :: Int -> IO () -> IO ()
+viewGame :: (?env :: Env) => Int -> IO () -> IO ()
 viewGame n killDialog = do
   background (withStatus "Fetching game" (getServerGame n)) $ \case
     Nothing -> return ()
@@ -601,37 +594,37 @@ viewGame n killDialog = do
       let nodes = either error id $ expandGame (sgiTimeControl sgi) (map (second Just) (sgiMoves sgi))
           pos = Node.regularPosition $ if null nodes then Nothing else Just (last nodes)
       newGame' GameParams{names = sgiNames sgi
-                        ,ratings = Just <$> sgiRatings sgi
-                        ,isUser = mapColourArray (const False)
-                        ,timeControl = sgiTimeControl sgi
-                        ,rated = sgiRated sgi
-                        }
-              (foldr (\n f -> [Node (Node.SomeNode n) f]) [] nodes)
-              (\_ -> return ())
-              (return (pure GameState{started = True, position = pos, result = Just $ sgiResult sgi},
-                       never))
-              (return ())
+                         ,ratings = Just <$> sgiRatings sgi
+                         ,isUser = mapColourArray (const False)
+                         ,timeControl = sgiTimeControl sgi
+                         ,rated = sgiRated sgi
+                         }
+        (foldr (\n f -> [Node (Node.SomeNode n) f]) [] nodes)
+        (\_ -> return ())
+        (return (pure GameState{started = True, position = pos, result = Just $ sgiResult sgi},
+                 never))
+        (return ())
 
 ----------------------------------------------------------------
 
-getBotLadder :: IO ()
+getBotLadder :: (?env :: Env) => IO ()
 getBotLadder = do
-  u <- fromMaybe "" <$> getConf' username
+  u <- fromMaybe "" <$> getConf username
   a <- async (botLadderAll (if null u then Nothing else Just u))
   atomically $ writeTVar (get botLadderBotsRef) $ wait a
 
-startBot :: String -> Colour -> IO ()
+startBot :: (?env :: Env) => String -> Colour -> IO ()
 startBot url c = do
   s <- getResponseBody =<< simpleHTTP (postRequestWithBody url "application/x-www-form-urlencoded"
-                                                           (urlEncodeVars [("action", "player")
-                                                                          ,("newgame", "Start Bot")
-                                                                          ,("side", colourToServerChar c : [])
-                                                                          ]))
+                                        (urlEncodeVars [("action", "player")
+                                                       ,("newgame", "Start Bot")
+                                                       ,("side", colourToServerChar c : [])
+                                                       ]))
   when (s /= "Bot started.\n") $ alert s
 
 ----------------------------------------------------------------
 
-playBot :: BotLadderBot -> Colour -> IO ()
+playBot :: (?env :: Env) => BotLadderBot -> Colour -> IO ()
 playBot bot c = void $ forkIO $ do
   withStatus "Starting bot" $ startBot (botUrl bot) (flipColour c)
   gameroom <- gameroom
@@ -640,7 +633,7 @@ playBot bot c = void $ forkIO $ do
     Nothing -> error "Missing game"   -- TODO: something better
     Just game -> withStatus "Starting game" $ setServerGame game
 
-playBotCallback :: IO ()
+playBotCallback :: (?env :: Env) => IO ()
 playBotCallback = do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)
@@ -663,8 +656,8 @@ playBotCallback = do
   let speeds = ["Lightning", "Blitz", "Fast", "P2", "P1", "CC"]
       (rest, bits) = mapAccumL (\bs s -> partition (not . (s `isSuffixOf`) . botName) bs) bots speeds
   (ts, tv) <- makeTreeStore (zipWith (\speed bit -> Node (Left speed) (map (\bot -> Node (Right bot) []) bit))
-                                    (speeds ++ ["Rest"])
-                                    (bits ++ [rest]))
+                              (speeds ++ ["Rest"])
+                              (bits ++ [rest]))
                             [("Bot", \x -> [cellText := either id botName x])
                             ,("Rating", \x -> [cellText := either (const "") (show . botRating) x])
                             ]
@@ -709,28 +702,28 @@ dummyGame tc = do
                     ,timeControl = tc
                     ,rated = False
                     }
-          []
-          (\r -> do
-              fire r
-              n <- readIORef counter
-              modifyIORef' counter (+ 1)
-              forkIO $ do
-                threadDelay 1000000
-                postGUIAsync $ fireResponse n
-              return n
-          )
-          (fromAddHandler responseAH)
-          (do
-             e <- fromAddHandler ah
-             let u = requestToUpdate <$> e
-             b <- accumB newGameState (flip updateGameState <$> u)
-             return (b, u)
-          )
-          (return ())
+    []
+    (\r -> do
+        fire r
+        n <- readIORef counter
+        modifyIORef' counter (+ 1)
+        forkIO $ do
+          threadDelay 1000000
+          postGUIAsync $ fireResponse n
+        return n
+    )
+    (fromAddHandler responseAH)
+    (do
+       e <- fromAddHandler ah
+       let u = requestToUpdate <$> e
+       b <- accumB newGameState (flip updateGameState <$> u)
+       return (b, u)
+    )
+    (return ())
 
 ----------------------------------------------------------------
 
-promptUsername :: IO () -> IO ()
+promptUsername :: (?env :: Env) => IO () -> IO ()
 promptUsername finalAction = do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)]
@@ -761,22 +754,22 @@ promptUsername finalAction = do
 
   return ()
 
-initialStuff :: IO ()
+initialStuff :: (?env :: Env) => IO ()
 initialStuff = do
   let x = do
         getBotLadder
         void $ forkIO updateServerGames
-  u <- getConf' username
-  p <- getConf' password
+  u <- getConf username
+  p <- getConf password
   case (u, p) of
     (Just _, Just _) -> x
     _ -> promptUsername x
 
 ----------------------------------------------------------------
 
-initKeyList :: IO (ListStore (String, ([Modifier], KeyVal)))
+initKeyList :: (?env :: Env) => IO (ListStore (String, ([Modifier], KeyVal)))
 initKeyList = do
-  ls <- listStoreNew =<< mapM (\(setting, desc, _) -> (desc,) <$> getConf' setting) (toList keys)
+  ls <- listStoreNew =<< mapM (\(setting, desc, _) -> (desc,) <$> getConf setting) (toList keys)
   treeViewSetModel (get (keyTreeView . widgets)) (Just ls)
 
   crt <- cellRendererTextNew
@@ -788,8 +781,8 @@ initKeyList = do
 
   cellLayoutPackStart (get (accelColumn . widgets)) cra False
   cellLayoutSetAttributes (get (accelColumn . widgets)) cra ls $ \(_,(m,k)) -> [cellRendererAccelAccelKey := fromIntegral k
-                                                                   ,cellRendererAccelAccelMods := m
-                                                                   ]
+                                                                               ,cellRendererAccelAccelMods := m
+                                                                               ]
 
   get (keyTreeView . widgets) `on` keyPressEvent $ do
     k <- eventKeyVal
@@ -804,15 +797,15 @@ initKeyList = do
 
   return ls
 
-settingsSetCallback :: ListStore (String, ([Modifier], KeyVal)) -> IO ()
+settingsSetCallback :: (?env :: Env) => ListStore (String, ([Modifier], KeyVal)) -> IO ()
 settingsSetCallback ls = do
   c <- readTVarIO (get conf)
   c' <- ($ c) <$> get widgetsToConf
 
   l <- listStoreToList ls
   let c'' = foldl' (\c ((s,_,_),(_,mk)) -> setSetting c s mk)
-                   c'
-                   $ zip (toList keys) l
+              c'
+              $ zip (toList keys) l
 
   let f c = (getSetting' c username, getSetting' c password)
       (u, p) = f c''
@@ -1001,15 +994,6 @@ drawFuncs Widgets{boardCanvas, captureCanvas, treeCanvas} setupIcons conf = do
   setDrawCapture <- makeDraw captureCanvas
   setDrawTree <- makeDraw treeCanvas
 
-  setDrawBoard $ \canvas -> do
-    x <- liftIO $ squareSize canvas
-    setSourceRGB 1 1 1
-    paint
-    translate borderWidth borderWidth
-    scale x x
-
-    liftIO (readTVarIO conf) >>= drawEmptyBoard
-
   return (setDrawBoard, setDrawSetupIcons, setDrawCapture, setDrawTree)
 
 extraHandlers Widgets{..} = do
@@ -1097,19 +1081,6 @@ main = do
   (setupIcons, setupLabels) <- setupWidgets widgets
   (widgetsToConf, confToWidgets) <- settingWidgets widgets conf
 
-  blindMode <- blind widgets
-
-  widgetAddEvents boardCanvas [ButtonPressMask, ButtonReleaseMask, Button1MotionMask]
-  widgetAddEvents window [KeyPressMask]
-  widgetAddEvents treeCanvas [ButtonPressMask]
-
-  keys@Keys{toggleFullscreenE, dummyGameE} <- initKeyActions widgets
-
-  (events, newGameFire) <- getEvents widgets keys setupIcons blindMode confE
-
-  fullscreenKey widgets toggleFullscreenE
-  register dummyGameE $ \_ -> dummyGame (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
-
   (setDrawBoard, setDrawSetupIcons, setDrawCapture, setDrawTree) <-
     drawFuncs widgets setupIcons conf
 
@@ -1124,9 +1095,27 @@ main = do
 
   trapMask <- mkTrapMask 1.6 3.2 1.5
 
-  writeIORef globalEnv Env{..}
+  let ?env = Env {..}
 
-----------------------------------------------------------------
+  setDrawBoard $ \canvas -> do
+    x <- liftIO $ squareSize canvas
+    translate borderWidth borderWidth
+    scale x x
+
+    liftIO (readTVarIO conf) >>= drawEmptyBoard False
+  
+  widgetAddEvents boardCanvas [ButtonPressMask, ButtonReleaseMask, Button1MotionMask]
+  widgetAddEvents window [KeyPressMask]
+  widgetAddEvents treeCanvas [ButtonPressMask]
+
+  blindMode <- blind widgets
+
+  keys@Keys{toggleFullscreenE, dummyGameE} <- initKeyActions widgets
+
+  (events, newGameFire) <- getEvents widgets keys setupIcons blindMode confE
+
+  fullscreenKey widgets toggleFullscreenE
+  register dummyGameE $ \_ -> dummyGame (fromJust (parseTimeControl "15s/30s/100")) --"1d/30d/100/0/10m/0"))
 
   extraHandlers widgets
 

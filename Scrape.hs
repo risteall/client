@@ -2,7 +2,11 @@
 
 {-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards, TypeApplications, DeriveGeneric #-}
 
-module Scrape where
+module Scrape
+  (ServerGameInfo(..), getServerGame
+  ,BotLadderBot(..), botLadderAll
+  ,ScrapeGameInfo(..), getGames
+  ) where
 
 import Data.Array.IArray
 import Data.Maybe
