@@ -37,6 +37,7 @@ import Data.Foldable
 import Language.Haskell.TH.Syntax
 import Lens.Micro
 import System.Random
+import System.Timeout
 
 import Draw
 import qualified Protocol
@@ -397,13 +398,20 @@ watchGame gid = handle (\(Protocol.ServerError s) -> alert s) $ do
 
 ----------------------------------------------------------------
 
+setMVar :: MVar a -> a -> IO ()
+setMVar m x = do
+  _ <- tryTakeMVar m
+  putMVar m x
+
 updateServerGames :: (?env :: Env) => IO ()
 updateServerGames = forever $ do
   gameroom <- gameroom
-  Protocol.myGames gameroom >>= atomically . writeTVar (get myGames)
-  Protocol.openGames gameroom >>= atomically . writeTVar (get openGames)
-  getGames "http://arimaa.com/arimaa/gameroom/watchgames.cgi" >>= atomically . writeTVar (get liveGames)
-  getGames "http://arimaa.com/arimaa/gameroom/postalgames.cgi" >>= atomically . writeTVar (get postalGames)
+  Protocol.myGames gameroom >>= setMVar (get myGames)
+  Protocol.openGames gameroom >>= setMVar (get openGames)
+  getGames "http://arimaa.com/arimaa/gameroom/watchgames.cgi" >>= setMVar (get liveGames)
+  getGames "http://arimaa.com/arimaa/gameroom/postalgames.cgi" >>= setMVar (get postalGames)
+  getGames "http://arimaa.com/arimaa/gameroom/recentgames.cgi" >>= setMVar (get recentGames)
+
   threadDelay (30 * 10^6)
 
 makeTreeStore :: Forest a -> [(String, a -> [AttrOp CellRendererText])] -> IO (TreeStore a, TreeView)
@@ -460,9 +468,10 @@ serverGameCallback games = do
   return ()
 
 watchGameCallback :: (?env :: Env) => IO ()
-watchGameCallback = do
-  liveGames <- readTVarIO (get liveGames)
-  postalGames <- readTVarIO (get postalGames)
+watchGameCallback =
+    background (timeout (5*10^6)
+                 ((,) <$> readMVar (get liveGames) <*> readMVar (get postalGames)))
+      $ maybe (return ()) $ \(liveGames, postalGames) -> do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)
             ,windowDefaultWidth := 600
@@ -506,8 +515,9 @@ watchGameCallback = do
 
   return ()
 
+-- inefficient: TreeStore reconstructed on every call
 recentGamesCallback :: (?env :: Env) => IO ()
-recentGamesCallback = background (withStatus "Fetching games" (getGames "http://arimaa.com/arimaa/gameroom/recentgames.cgi")) $ \games -> do
+recentGamesCallback = background (timeout (5*10^6) (readMVar (get recentGames))) $ maybe (return ()) $ \games -> do
   d <- dialogNew
   Gtk.set d [windowTransientFor := get (window . widgets)
             ,windowDefaultWidth := 800
@@ -1009,8 +1019,12 @@ extraHandlers Widgets{..} = do
         _ -> return ()
     return False
 
-  myGamesItem `on` menuItemActivated $ readTVarIO (get myGames) >>= serverGameCallback
-  openGamesItem `on` menuItemActivated $ readTVarIO (get openGames) >>= serverGameCallback
+  myGamesItem `on` menuItemActivated
+    $ background (timeout (5*10^6) (readMVar (get myGames)))
+    $ maybe (return ()) serverGameCallback
+  openGamesItem `on` menuItemActivated
+    $ background (timeout (5*10^6) (readMVar (get openGames)))
+    $ maybe (return ()) serverGameCallback
   watchGamesItem `on` menuItemActivated $ watchGameCallback
   recentGamesItem `on` menuItemActivated $ recentGamesCallback
   viewGameItem `on` menuItemActivated $ viewGameCallback
@@ -1090,10 +1104,11 @@ main = do
 
   statusStack <- newTVarIO []
 
-  myGames <- newTVarIO []
-  openGames <- newTVarIO []
-  liveGames <- newTVarIO []
-  postalGames <- newTVarIO []
+  myGames <- newEmptyMVar
+  openGames <- newEmptyMVar
+  liveGames <- newEmptyMVar
+  postalGames <- newEmptyMVar
+  recentGames <- newEmptyMVar
   botLadderBotsRef <- newTVarIO (return [])
   gameroomRef <- newTVarIO Nothing
 

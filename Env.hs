@@ -9,6 +9,7 @@ import Control.Concurrent.STM
 import Data.Unique
 import Data.AppSettings
 import qualified Data.Map.Strict as Map
+import Control.Concurrent.MVar
 
 import Protocol (Gameroom, GameInfo)
 import Scrape
@@ -49,10 +50,11 @@ data Env = Env
   ,setDrawTree :: (DrawingArea -> Render ()) -> IO ()
   ,botLadderBotsRef :: TVar (IO [BotLadderBot])
   ,statusStack :: TVar [(Unique, String)]
-  ,myGames :: TVar [GameInfo]
-  ,openGames :: TVar [GameInfo]
-  ,liveGames :: TVar [ScrapeGameInfo]
-  ,postalGames :: TVar [ScrapeGameInfo]
+  ,myGames :: MVar [GameInfo]
+  ,openGames :: MVar [GameInfo]
+  ,liveGames :: MVar [ScrapeGameInfo]
+  ,postalGames :: MVar [ScrapeGameInfo]
+  ,recentGames :: MVar [ScrapeGameInfo]
   ,conf :: TVar Conf
   ,gameroomRef :: TVar (Maybe Gameroom)
   ,setConf :: Conf -> IO ()
