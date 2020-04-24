@@ -653,10 +653,12 @@ playBotCallback = do
   Gtk.set l [miscXalign := 0]
   containerAdd u l
 
-  randomButton <- radioButtonNewWithLabel "Random"
-  goldButton <- radioButtonNewWithLabelFromWidget randomButton "Gold"
-  silverButton <- radioButtonNewWithLabelFromWidget randomButton "Silver"
-  mapM_ (containerAdd u) [randomButton, goldButton, silverButton]
+  goldButton <- radioButtonNewWithLabel "Gold"
+  silverButton <- radioButtonNewWithLabelFromWidget goldButton "Silver"
+  let buttons = [goldButton, silverButton]
+  mapM_ (containerAdd u) buttons
+  n <- randomRIO (0, 1)
+  toggleButtonSetActive (buttons !! n) True
 
   bots <- botLadderBots
   let speeds = ["Lightning", "Blitz", "Fast", "P2", "P1", "CC"]
@@ -682,9 +684,7 @@ playBotCallback = do
       Nothing -> return ()
       Just iter -> treeModelGetPath ts iter >>= treeStoreGetValue ts >>= \case
         Left _ -> return ()
-        Right bot -> mapM toggleButtonGetActive [randomButton, goldButton, silverButton]
-                       >>= sequence . fmap fst . find snd . zip [(\b -> if b then Gold else Silver) <$> randomIO, return Gold, return Silver]
-                       >>= \case
+        Right bot -> fmap fst . find snd . zip [Gold, Silver] <$> mapM toggleButtonGetActive buttons >>= \case
           Nothing -> return ()
           Just c -> do
             widgetDestroy d
