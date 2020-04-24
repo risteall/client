@@ -1,9 +1,9 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds, TypeApplications, DeriveTraversable, DeriveLift, TemplateHaskell, ImplicitParams #-}
+{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds, TypeApplications, DeriveTraversable, DeriveLift, TemplateHaskell, ImplicitParams, FlexibleInstances, RankNTypes #-}
 
 import Data.Array.IArray
-import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle)
+import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle, on)
 import qualified Graphics.UI.Gtk as Gtk
 import Graphics.Rendering.Cairo
 import Data.IORef
@@ -38,6 +38,9 @@ import Language.Haskell.TH.Syntax
 import Lens.Micro
 import System.Random
 import System.Timeout
+import Control.Monad.Trans.Reader
+import Graphics.Rendering.Cairo.Internal (Render(Render), runRender)
+import System.IO
 
 import Draw
 import qualified Protocol
@@ -106,17 +109,43 @@ initKeyActions widgets = do
           else return False
     liftIO $ anyM f l
   return $ fmap (\(_,_,(ah,_)) -> ah) l
-  
+
 ----------------------------------------------------------------
 
-onS :: GObjectClass object => object -> Signal object (IO ()) -> AddHandler ()
+defaultHandler :: (?env :: Env) => a -> IO a -> IO a
+defaultHandler x = flip catch $ \(e :: SomeException) -> do
+  errorMessage (show e)
+  return x
+
+class WrapCallback c where
+  withHandler :: (?env :: Env) => c -> c
+
+instance WrapCallback (IO ()) where
+  withHandler = defaultHandler ()
+
+instance WrapCallback (EventM t Bool) where
+  withHandler c = ReaderT $ \env -> defaultHandler True (runReaderT c env)
+           -- withRunInIO $ \run -> defaultHandler True (run e)
+
+instance WrapCallback (Render ()) where
+  withHandler c = Render $ ReaderT $ \env -> defaultHandler () (runReaderT (runRender c) env)
+
+instance WrapCallback (r -> IO ()) where
+  withHandler c = \env -> defaultHandler () (c env)
+
+on :: (?env :: Env, WrapCallback callback) => object -> Signal object callback -> callback -> IO (ConnectId object)
+on obj s c = Gtk.on obj s (withHandler c)
+
+----------------------------------------------------------------
+
+onS :: (?env :: Env, GObjectClass object) => object -> Signal object (IO ()) -> AddHandler ()
 onS o s = AddHandler $ \h -> do
-  c <- Gtk.on o s (h ())
+  c <- on o s (h ())
   return $ signalDisconnect c
 
-onE :: GObjectClass object => object -> Signal object (EventM t Bool) -> EventM t (Maybe a) -> AddHandler a
+onE :: (?env :: Env, GObjectClass object) => object -> Signal object (EventM t Bool) -> EventM t (Maybe a) -> AddHandler a
 onE o s k = AddHandler $ \h -> do
-  c <- Gtk.on o s $ k >>= \case
+  c <- on o s $ k >>= \case
     Nothing -> return False
     Just a -> do
       liftIO $ h a
@@ -169,25 +198,14 @@ setUsernameAndPassword u p = do
 
 ----------------------------------------------------------------
 
-boardCoordinates' :: WidgetClass w => w -> (Double, Double) -> IO (Square, (Double, Double))
-boardCoordinates' widget (x,y) = do
-  s <- squareSize widget
-  let [(u,a), (v,b)] = map (properFraction . (/ s) . subtract borderWidth) [x,y]
-  return ((u,v), (a,b))
-
-boardCoordinates :: WidgetClass w => w -> (Double, Double) -> IO Square
-boardCoordinates widget (x,y) = fst <$> boardCoordinates' widget (x,y)
-
-----------------------------------------------------------------
-
 background :: IO a -> (a -> IO ()) -> IO ()
 background x y = void $ forkIO $ x >>= postGUIAsync . y
 
 showStatus :: (?env :: Env) => IO ()
 showStatus = do
   readTVarIO (get statusStack) >>= \case
-    [] -> labelSetText (get (statusLabel . widgets)) ""
-    (_,m):_ -> labelSetText (get (statusLabel . widgets)) m
+    [] -> labelSetMarkup (get (statusLabel . widgets)) ""
+    (_,m):_ -> labelSetMarkup (get (statusLabel . widgets)) m
 
 setStatus :: (?env :: Env) => String -> Maybe Int -> IO (IO ())
 setStatus message timeout = do
@@ -232,21 +250,26 @@ sendMessage ch r m = atomically $ do
 --       (c', m) -> (c', (c',) <$> m)
 --     (toMove', l) = mapAccumL f' toMove $ map words $ splitOn "\DC3" moveString
 
-alert :: (?env :: Env) => String -> IO ()
-alert s = do
-  x <- newEmptyMVar
-  postGUIAsync $ do
-    d <- messageDialogNew (Just (get (window . widgets))) [] MessageError ButtonsOk s
-    widgetShowAll d
-    d `on` response $ \_ -> do
-      widgetDestroy d
-      putMVar x ()
-    return ()
-  takeMVar x
+-- alert :: (?env :: Env) => String -> IO ()
+-- alert s = do
+--   x <- newEmptyMVar
+--   postGUIAsync $ do
+--     d <- messageDialogNew (Just (get (window . widgets))) [] MessageError ButtonsOk s
+--     widgetShowAll d
+--     d `on` response $ \_ -> do
+--       widgetDestroy d
+--       putMVar x ()
+--     return ()
+--   takeMVar x
+
+errorMessage :: (?env :: Env) => String -> IO ()
+errorMessage s = do
+  hPutStrLn stderr s
+  void $ setStatus ("<span weight=\"bold\" foreground=\"#0d0\">" ++ s ++ "</span>") (Just 15)
 
 toServer :: (?env :: Env) => PlayInfo -> String -> TChan (Request, Int) -> TChan Int -> IO ()
 toServer (gsurl, sid) auth requestChan responseChan = forever $ try f >>= \case
-    Left (Protocol.ServerError e) -> alert e
+    Left (Protocol.ServerError e) -> errorMessage e
     Right _ -> return ()
   where
     f = bracket
@@ -303,7 +326,7 @@ fromServer :: (?env :: Env) => PlayInfo -> [(String, String)] -> Bool -> TChan U
 fromServer (gsurl, sid) response started updateChan = do
   let [lc, ml, cl] = getFields ["lastchange", "moveslength", "chatlength"] response
   
-  response' <- handle (\(Protocol.ServerError s) -> do {alert s; return response})
+  response' <- handle (\(Protocol.ServerError s) -> do {errorMessage s; return response})
                  $ arimaaPost gsurl [("action", "updategamestate")
                                     ,("sid", sid)
                                     ,("wait", "1")
@@ -325,7 +348,7 @@ channelEvent chan = do
   fromAddHandler ah
 
 setServerGame :: (?env :: Env) => GameInfo -> IO ()
-setServerGame gameInfo = handle (\(Protocol.ServerError s) -> alert s) $ do
+setServerGame gameInfo = handle (\(Protocol.ServerError s) -> errorMessage s) $ do
   gameroom <- gameroom
   ri <- reserveSeat gameroom gameInfo
   ((gsurl, sid), _, _) <- sit gameroom ri
@@ -361,7 +384,7 @@ setServerGame gameInfo = handle (\(Protocol.ServerError s) -> alert s) $ do
               (mapM_ killThread [t1, t2])
 
 watchGame :: (?env :: Env) => String -> IO ()
-watchGame gid = handle (\(Protocol.ServerError s) -> alert s) $ do
+watchGame gid = handle (\(Protocol.ServerError s) -> errorMessage s) $ do
   gameroom <- gameroom
   ri <- Protocol.reserveView gameroom gid
   ((gsurl, sid), _, _) <- sit gameroom ri
@@ -631,7 +654,7 @@ startBot url c = do
                                                        ,("newgame", "Start Bot")
                                                        ,("side", colourToServerChar c : [])
                                                        ]))
-  when (s /= "Bot started.\n") $ alert s
+  when (s /= "Bot started.\n") $ errorMessage s
 
 ----------------------------------------------------------------
 
@@ -811,10 +834,10 @@ initKeyList = do
 
   return ls
 
-settingsSetCallback :: (?env :: Env) => ListStore (String, ([Modifier], KeyVal)) -> IO ()
-settingsSetCallback ls = do
+settingsSetCallback :: (?env :: Env) => ListStore (String, ([Modifier], KeyVal)) -> IO (Conf -> Conf) -> IO ()
+settingsSetCallback ls widgetsToConf = do
   c <- readTVarIO (get conf)
-  c' <- ($ c) <$> get widgetsToConf
+  c' <- ($ c) <$> widgetsToConf
 
   l <- listStoreToList ls
   let c'' = foldl' (\c ((s,_,_),(_,mk)) -> setSetting c s mk)
@@ -930,11 +953,20 @@ blind Widgets{blindModeMenu} = do
             (first : rest) l
   return ah
 
+boardCoordinates' :: WidgetClass w => w -> (Double, Double) -> IO (Square, (Double, Double))
+boardCoordinates' widget (x,y) = do
+  s <- squareSize widget
+  let [(u,a), (v,b)] = map (properFraction . (/ s) . subtract borderWidth) [x,y]
+  return ((u,v), (a,b))
+
+boardCoordinates :: WidgetClass w => w -> (Double, Double) -> IO Square
+boardCoordinates widget (x,y) = fst <$> boardCoordinates' widget (x,y)
+
 getEvents Widgets{boardCanvas, treeCanvas, flipBoard} Keys{..} setupIcons blindMode confE = do
   let setupIconsE = map (\icon -> icon `onE` buttonPressEvent $ return (Just ())) setupIcons
 
   (tick, tickFire) <- newAddHandler
-  timeoutAdd (True <$ tickFire ()) (div 1000 tickFrequency)
+  timeoutAdd (True <$ withHandler (tickFire ())) (div 1000 tickFrequency)
 
   (leftPress, leftPressFire) <- newAddHandler
   (rightPress, rightPressFire) <- newAddHandler
@@ -994,23 +1026,30 @@ fullscreenKey Widgets{..} toggleFullscreenE = do
       windowUnfullscreen window
       writeIORef fullscreen False
 
+-- because no impredicative polymorphism
+data UseEnv = UseEnv {getUseEnv :: (?env :: Env) => IO ()}
+
 drawFuncs Widgets{boardCanvas, captureCanvas, treeCanvas} setupIcons conf = do
-  let makeDraw :: WidgetClass w => w -> IO ((w -> Render ()) -> IO ())
+  let makeDraw :: WidgetClass w => w -> IO ((w -> Render ()) -> IO (), UseEnv)
       makeDraw w = do
         drawRef <- newIORef $ return ()
-        w `on` draw $ join (liftIO (readIORef drawRef))
-        return $ \r -> do
-          writeIORef drawRef (r w)
-          widgetQueueDraw w
+        let set r = do
+              writeIORef drawRef (r w)
+              widgetQueueDraw w
+        return (set, UseEnv (void (w `on` draw $ join (liftIO (readIORef drawRef)))))
 
-  setDrawBoard <- makeDraw boardCanvas
-  setDrawSetupIcons <- mapM makeDraw setupIcons
-  setDrawCapture <- makeDraw captureCanvas
-  setDrawTree <- makeDraw treeCanvas
+  (setDrawBoard, f1) <- makeDraw boardCanvas
+  (setDrawSetupIcons, fl) <- unzip <$> mapM makeDraw setupIcons
+  (setDrawCapture, f2) <- makeDraw captureCanvas
+  (setDrawTree, f3) <- makeDraw treeCanvas
 
-  return (setDrawBoard, setDrawSetupIcons, setDrawCapture, setDrawTree)
+  return ((setDrawBoard, setDrawSetupIcons, setDrawCapture, setDrawTree)
+         ,UseEnv (getUseEnv f1 >> mapM_ getUseEnv fl >> getUseEnv f2 >> getUseEnv f3))
 
-extraHandlers Widgets{..} = do
+extraHandlers :: (?env :: Env) => IO ()
+extraHandlers = do
+  let Widgets{..} = get widgets
+  
   window `on` deleteEvent $ do
     liftIO $ do
       mainQuit
@@ -1036,11 +1075,13 @@ extraHandlers Widgets{..} = do
 
   widgetGrabDefault =<< dialogAddButton settingsDialog "OK" ResponseOk
 
+  (widgetsToConf, confToWidgets) <- settingWidgets (get widgets) (get conf)
+
   do
     ls <- initKeyList
 
     settingsItem `on` menuItemActivated $ do
-      readTVarIO (get conf) >>= get confToWidgets
+      readTVarIO (get conf) >>= confToWidgets
       windowPresent settingsDialog
 
     settingsDialog `on` deleteEvent $ do
@@ -1048,14 +1089,14 @@ extraHandlers Widgets{..} = do
       return True
 
     settingsDialog `on` response $ \case
-      ResponseAccept -> settingsSetCallback ls
+      ResponseAccept -> settingsSetCallback ls widgetsToConf
       ResponseOk -> do
-        settingsSetCallback ls
+        settingsSetCallback ls widgetsToConf
         widgetHide settingsDialog
       _ -> return ()
   
   -- this is on realize so that the prompt-username window is centred over the main window
-  window `on` realize $ initialStuff
+  void $ window `on` realize $ initialStuff
 
 layoutHack Widgets{window, boardCanvas, topClock} = do
   sizeRef <- newIORef Nothing
@@ -1097,9 +1138,8 @@ main = do
   widgets@Widgets{..} <- getWidgets builder
 
   (setupIcons, setupLabels) <- setupWidgets widgets
-  (widgetsToConf, confToWidgets) <- settingWidgets widgets conf
 
-  (setDrawBoard, setDrawSetupIcons, setDrawCapture, setDrawTree) <-
+  ((setDrawBoard, setDrawSetupIcons, setDrawCapture, setDrawTree), drawHandlers) <-
     drawFuncs widgets setupIcons conf
 
   statusStack <- newTVarIO []
@@ -1116,6 +1156,8 @@ main = do
 
   let ?env = Env {..}
 
+  getUseEnv drawHandlers
+  
   setDrawBoard $ \canvas -> do
     x <- liftIO $ squareSize canvas
     translate borderWidth borderWidth
@@ -1136,7 +1178,7 @@ main = do
   fullscreenKey widgets toggleFullscreenE
   register dummyGameE $ \_ -> dummyGame (fromJust (parseTimeControl "15s/30s/100")) --"1d/30d/100/0/10m/0"))
 
-  extraHandlers widgets
+  extraHandlers
 
   -- command line
   when True $ layoutHack widgets

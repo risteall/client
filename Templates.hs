@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, TemplateHaskell, TupleSections, StandaloneDeriving, DeriveLift #-}
+{-# LANGUAGE LambdaCase, TemplateHaskell, TupleSections, StandaloneDeriving, DeriveLift, ImplicitParams #-}
 
 module Templates where
 
@@ -61,33 +61,3 @@ declareSettings x l = do
       return ([sig, dec], fun `appE` varE n)
 
 ----------------------------------------------------------------
-
-deriving instance Lift Modifier
-
-declareKeys :: [(String, [Modifier], String, String, ExpQ)] -> Q [Dec]
-declareKeys l = do
-    dataDec <- dataD
-      (return [])
-      keysDN
-      [PlainTV tv]
-      Nothing
-      [recC keysDN (map (\a -> (a, Bang NoSourceUnpackedness NoSourceStrictness,) <$> varT tv) names)]
-      [derivClause Nothing [[t|Functor|], [t|Foldable|], [t|Traversable|]]]
-    funDec <- funD keysN [clause [] (normalB (recConE keysDN $ zipWith f names l)) []]
-    return [dataDec, funDec]
-  where
-    names = map (\(a,_,_,_,_) -> mkName a) l
-    settingName a = uncamel (init a) ++ "-key"
-    keysDN = mkName "Keys"
-    tv = mkName "a"
-    keysN = mkName "keys"
---    sig = sigD keysN (varT keysDN `appT` [t|(Setting ([Modifier], KeyVal), String, Maybe (Widgets -> AddHandler ()))|])
-    f n (a,b,c,d,e) = do
-      expr <- tupE [[|Setting|]
-                    `appE` stringE (settingName a)
-                    `appE` tupE [lift b, [|keyFromName . fromString|] `appE` stringE c]
-                   ,stringE d
-                   ,e
-                   ]
-      return (n, expr)
-  

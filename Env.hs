@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, ImplicitParams #-}
+{-# LANGUAGE TemplateHaskell, ImplicitParams, StandaloneDeriving, TupleSections, DeriveLift #-}
 
 module Env where
 
@@ -10,6 +10,9 @@ import Data.Unique
 import Data.AppSettings
 import qualified Data.Map.Strict as Map
 import Control.Concurrent.MVar
+import Language.Haskell.TH
+import Language.Haskell.TH.Syntax
+import Reactive.Banana.Frameworks
 
 import Protocol (Gameroom, GameInfo)
 import Scrape
@@ -58,8 +61,6 @@ data Env = Env
   ,conf :: TVar Conf
   ,gameroomRef :: TVar (Maybe Gameroom)
   ,setConf :: Conf -> IO ()
-  ,widgetsToConf :: IO (Conf -> Conf)
-  ,confToWidgets :: Conf -> IO ()
   ,trapMask :: Surface
   }
 
@@ -70,3 +71,37 @@ getConf :: (?env :: Env, Read a) => Setting a -> IO a
 getConf s = do
   c <- readTVarIO (get conf)
   return $ getSetting' c s
+
+----------------------------------------------------------------
+
+-- defined here because needs Env, used in Main
+
+deriving instance Lift Modifier
+
+declareKeys :: [(String, [Modifier], String, String, ExpQ)] -> Q [Dec]
+declareKeys l = do
+    dataDec <- dataD
+      (return [])
+      keysDN
+      [PlainTV tv]
+      Nothing
+      [recC keysDN (map (\a -> (a, Bang NoSourceUnpackedness NoSourceStrictness,) <$> varT tv) names)]
+      [derivClause Nothing [[t|Functor|], [t|Foldable|], [t|Traversable|]]]
+    funDec <- funD keysN [clause [] (normalB (recConE keysDN $ zipWith f names l)) []]
+    sig <- sigD keysN (forallT [] (cxt [[t|?env :: Env|]])
+                                  (conT keysDN `appT` [t|(Setting ([Modifier], KeyVal), String, Maybe (Widgets -> AddHandler ()))|]))
+    return [dataDec, sig, funDec]
+  where
+    names = map (\(a,_,_,_,_) -> mkName a) l
+    settingName a = uncamel (init a) ++ "-key"
+    keysDN = mkName "Keys"
+    tv = mkName "a"
+    keysN = mkName "keys"
+    f n (a,b,c,d,e) = do
+      expr <- tupE [[|Setting|]
+                    `appE` stringE (settingName a)
+                    `appE` tupE [lift b, [|keyFromName . fromString|] `appE` stringE c]
+                   ,stringE d
+                   ,e
+                   ]
+      return (n, expr)
