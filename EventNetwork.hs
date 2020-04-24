@@ -465,20 +465,6 @@ buttonAction b e x = do
   onChanges $ widgetSetSensitive b <$> (isJust <$> x)
   return $ filterJust $ x <@ e
 
-roundTripTimes :: Eq b => Event b -> Event b -> MomentIO (Event NominalDiffTime)
-roundTripTimes x y = do
-  let f a = do
-        t <- getCurrentTime
-        return (a, t)
-  e <- mapEventIO f x
-  pending <- accumB [] $ unions [(:) <$> e
-                                ,(\b -> filter ((/= b) . fst)) <$> y
-                                ]
-  let diffTime t = do
-        t' <- getCurrentTime
-        return $ diffUTCTime t' t
-  mapEventIO diffTime $ filterJust $ (\p b -> snd <$> find ((== b) . fst) p) <$> pending <@> y
-
 bigClockLabel :: Int -> Int -> Bool -> String
 bigClockLabel clock extra dran = "<span weight=\"bold\" foreground=\"" ++ colour ++ "\""
                                             ++ (if dran then " background=\"white\"" else "") ++ ">"
@@ -730,26 +716,43 @@ input events visible flipped eClear flash bConf eNode = mdo
 
 --------------------------------------------------------------------------------------------------------------------------------
 
+roundTripTimes :: Eq b => Event b -> Event b -> MomentIO (Event NominalDiffTime)
+roundTripTimes x y = do
+  let f a = do
+        t <- getCurrentTime
+        return (a, t)
+  e <- mapEventIO f x
+  pending <- accumB [] $ unions [(:) <$> e
+                                ,(\b -> filter ((/= b) . fst)) <$> y
+                                ]
+  let diffTime t = do
+        t' <- getCurrentTime
+        return $ diffUTCTime t' t
+  mapEventIO diffTime $ filterJust $ (\p b -> snd <$> find ((== b) . fst) p) <$> pending <@> y
+
 splitEventIO :: Event (IO a) -> MomentIO (Event (IO ()), Event a)
 splitEventIO e = do
   (e', fire) <- newEvent
   return ((>>= fire) <$> e, e')
 
-mapSend :: Eq a => Event Request -> Either (Request -> IO ()) (Request -> IO a, MomentIO (Event a)) -> MomentIO (Event (IO ()), Behavior Bool)
-mapSend e (Left f) = return (f <$> e, pure False)
-mapSend eRequest (Right (request, x)) = do
+unzipF :: Functor f => f (a, b) -> (f a, f b)
+unzipF x = (fst <$> x, snd <$> x)
+
+mapSend :: Eq a => [Event Request] -> Either (Request -> IO ()) (Request -> IO a, MomentIO (Event a)) -> MomentIO (Event (IO ()), [Behavior Bool])
+mapSend es (Left f) = return (foldr (unionWith (>>)) never (fmap f <$> es)
+                             ,map (const (pure False)) es)
+mapSend es (Right (request, x)) = do
   eResponse <- x
-  (io, eRequestId) <- splitEventIO (request <$> eRequest)  -- avoid reactimate inside execute
+  (eios, eas) <- unzip <$> mapM splitEventIO (fmap request <$> es)
   let
     g a (Just b) | a == b = Nothing
     g _ b = b
-  k <- accumB Nothing $ unions [const . Just <$> eRequestId
-                               ,g <$> eResponse
-                               ]
-  times <- roundTripTimes eRequestId eResponse
-  let io2 = print <$> times
+    f e = fmap (fmap isJust) $ accumB Nothing $ unions [const . Just <$> e
+                                                       ,g <$> eResponse]
+  bs <- mapM f eas
+  ets <- mapM (\e -> fmap print <$> roundTripTimes e eResponse) eas
 
-  return (unionWith (>>) io io2, isJust <$> k)
+  return (foldr (unionWith (>>)) never (eios ++ ets), bs)
   
 requests
   :: (?env :: Env)
@@ -762,12 +765,6 @@ requests
   -> MomentIO ()
 requests events eNewGame gameState bTree nextMove params = mdo
   let
-    send :: Event Request -> MomentIO (Behavior Bool)
-    send e = do
-      iob <- execute ((\NewGame{request} -> mapSend e request) <$> eNewGame)
-      switchE (fst <$> iob) >>= reactimate
-      switchB (pure False) (snd <$> iob)
-
     sendMove :: Behavior (Maybe GenMove)
     sendMove = g <$> (posToMove . position <$> gameState) <*> bTree <*> (fmap fst <$> nextMove) <*> sendStatus <*> params
       where
@@ -785,8 +782,19 @@ requests events eNewGame gameState bTree nextMove params = mdo
                | otherwise = Nothing
 
   eStartSend <- buttonAction (get (sendButton . widgets)) (sendE events) bStartSend
-  startStatus <- send $ RequestStart <$ whenE ((\gs p -> not (started gs) && isUser p ! Gold) <$> gameState <*> params) eStartSend
-  sendStatus <- send $ RequestMove <$> filterJust eStartSend
+
+  let
+    eStart = RequestStart <$ whenE ((\gs p -> not (started gs) && isUser p ! Gold) <$> gameState <*> params) eStartSend
+    eSend = RequestMove <$> filterJust eStartSend
+
+  eResign <- buttonAction (get (resignButton . widgets)) (resignE events) (fmap RequestResign <$> defaultColour)
+
+  (eeio, ebs) <- unzipF <$> execute ((\NewGame{request} -> mapSend [eStart, eSend, eResign] request) <$> eNewGame)
+  switchE eeio >>= reactimate
+  
+  startStatus <- switchB (pure False) ((!! 0) <$> ebs)
+  sendStatus <- switchB (pure False) ((!! 1) <$> ebs)
+  resignStatus <- switchB (pure False) ((!! 2) <$> ebs)
 
   let f _ True _ = "Starting"
       f _ _ True = "Sending"
@@ -795,8 +803,6 @@ requests events eNewGame gameState bTree nextMove params = mdo
     in onChanges $ buttonSetLabel (get (sendButton . widgets)) <$> (f <$> (started <$> gameState) <*> startStatus <*> sendStatus)
 
   let defaultColour = (\p -> find (isUser p !) [Gold, Silver]) <$> params
-  eResign' <- buttonAction (get (resignButton . widgets)) (resignE events) (fmap RequestResign <$> defaultColour)
-  resignStatus <- send eResign'
 
   onChanges $ buttonSetLabel (get (resignButton . widgets)) . (\b -> if b then "Resigning" else "Resign") <$> resignStatus
 

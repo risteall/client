@@ -6,6 +6,7 @@ import Data.Array.IArray
 import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle, on)
 import qualified Graphics.UI.Gtk as Gtk
 import Graphics.Rendering.Cairo
+import Graphics.Rendering.Cairo.Internal (Render(Render), runRender)
 import Data.IORef
 import Data.Maybe
 import Data.List
@@ -17,7 +18,6 @@ import Control.Concurrent.STM
 import Control.Concurrent
 import Data.Bifunctor
 import Data.Tree hiding (drawTree)
-import System.IO.Unsafe
 import Text.Read hiding (lift, get)
 import Network.HTTP hiding (Request, password)
 import Text.Regex
@@ -28,19 +28,18 @@ import Control.Exception
 import Reactive.Banana hiding (split)
 import qualified Reactive.Banana as RB
 import Reactive.Banana.Frameworks
-import GHC.Exts(fromString)
+import GHC.Exts (fromString)
 import Text.Printf
 import Data.Unique
 import Data.AppSettings
-import System.Environment
-import Data.Foldable
-import Language.Haskell.TH.Syntax
 import Lens.Micro
 import System.Random
 import System.Timeout
 import Control.Monad.Trans.Reader
-import Graphics.Rendering.Cairo.Internal (Render(Render), runRender)
 import System.IO
+import Data.Foldable
+
+import Debug.Trace
 
 import Draw
 import qualified Protocol
@@ -111,6 +110,11 @@ initKeyActions widgets = do
   return $ fmap (\(_,_,(ah,_)) -> ah) l
 
 ----------------------------------------------------------------
+
+errorMessage :: (?env :: Env) => String -> IO ()
+errorMessage s = do
+  hPutStrLn stderr s
+  void $ setStatus ("<span weight=\"bold\" foreground=\"#0d0\">" ++ s ++ "</span>") (Just 15)
 
 defaultHandler :: (?env :: Env) => a -> IO a -> IO a
 defaultHandler x = flip catch $ \(e :: SomeException) -> do
@@ -225,47 +229,14 @@ withStatus message action = do
   remove <- setStatus message Nothing
   finally action remove
 
+----------------------------------------------------------------
+
 sendMessage :: TChan (a, Int) -> TVar Int -> a -> IO Int
 sendMessage ch r m = atomically $ do
   n <- readTVar r
   writeTChan ch (m, n)
   writeTVar r (n+1)
   return n
-
--- parseMoves :: Colour -> String -> (Colour, [(Colour, Message)])
--- parseMoves toMove moveString = (toMove', catMaybes l)
---   where
---     parseMoveNum s = case reads s :: [(Int,String)] of
---       [(_,"w")] -> Just Gold
---       [(_,"b")] -> Just Silver
---       _ -> Nothing
---     f :: Colour -> [String] -> (Colour, Maybe Message)
---     f _ (w:ws) | Just c <- parseMoveNum w
---                  = (c, g ws)
---     f c ws = (c, g ws)
---     g ws@(w:_) | length w == 3 = Just $ SendMove $ Left (parseSetup ws)
---                | length w == 4 = Just $ SendMove $ Right (parseMove ws)
---     g _ = Nothing
---     f' c move = case f c move of
---       (c', m) -> (c', (c',) <$> m)
---     (toMove', l) = mapAccumL f' toMove $ map words $ splitOn "\DC3" moveString
-
--- alert :: (?env :: Env) => String -> IO ()
--- alert s = do
---   x <- newEmptyMVar
---   postGUIAsync $ do
---     d <- messageDialogNew (Just (get (window . widgets))) [] MessageError ButtonsOk s
---     widgetShowAll d
---     d `on` response $ \_ -> do
---       widgetDestroy d
---       putMVar x ()
---     return ()
---   takeMVar x
-
-errorMessage :: (?env :: Env) => String -> IO ()
-errorMessage s = do
-  hPutStrLn stderr s
-  void $ setStatus ("<span weight=\"bold\" foreground=\"#0d0\">" ++ s ++ "</span>") (Just 15)
 
 toServer :: (?env :: Env) => PlayInfo -> String -> TChan (Request, Int) -> TChan Int -> IO ()
 toServer (gsurl, sid) auth requestChan responseChan = forever $ try f >>= \case
