@@ -64,28 +64,117 @@ import Paths_nosteps
 
 deriving instance Read Modifier
 
-declareKeys
-  [("sendE", [], "s", "Send move", [|Just ((`onS` buttonActivated) . sendButton)|])
-  ,("resignE", [Gtk.Control], "r", "Resign", [|Just ((`onS` buttonActivated) . resignButton)|])
-  ,("planE", [], "space", "Enter plan move", [|Nothing|])
-  ,("sharpE", [], "x", "Run Sharp", [|Nothing|])
-  ,("toggleSharpE", [], "p", "Pause and unpause Sharp", [|Nothing|])
-  ,("clearE", [], "Escape", "Clear arrows", [|Nothing|])
-  ,("prevE", [], "Up", "Previous move", [|Nothing|])
-  ,("nextE", [], "Down", "Next move", [|Nothing|])
-  ,("startE", [Gtk.Control], "Up", "Go to game start", [|Nothing|])
-  ,("endE", [Gtk.Control], "Down", "Go to game end", [|Nothing|])
-  ,("currentE", [], "c", "Go to current game position", [|Nothing|])
-  ,("prevBranchE", [], "Left", "Previous variation", [|Nothing|])
-  ,("nextBranchE", [], "Right", "Next variation", [|Nothing|])
-  ,("deleteNodeE", [], "BackSpace", "Remove plan move", [|Nothing|])
-  ,("deleteLineE", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", [|Nothing|])
-  ,("deleteAllE", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", [|Nothing|])
-  ,("deleteFromHereE", [], "Delete", "Remove plans starting at current position", [|Nothing|])
-  ,("copyMovelistE", [Gtk.Control], "c", "Copy movelist", [|Nothing|])
-  ,("toggleFullscreenE", [], "F11", "Toggle fullscreen", [|Nothing|])
-  ,("dummyGameE", [Gtk.Control], "d", "Dummy game", [|Nothing|])
-  ]
+-- declareKeys
+--   [("sendE", [], "s", "Send move", [|Just ((`onS` buttonActivated) . sendButton)|])
+--   ,("resignE", [Gtk.Control], "r", "Resign", [|Just ((`onS` buttonActivated) . resignButton)|])
+--   ,("planE", [], "space", "Enter plan move", [|Nothing|])
+--   ,("sharpE", [], "x", "Run Sharp", [|Nothing|])
+--   ,("toggleSharpE", [], "p", "Pause and unpause Sharp", [|Nothing|])
+--   ,("clearE", [], "Escape", "Clear arrows", [|Nothing|])
+--   ,("prevE", [], "Up", "Previous move", [|Nothing|])
+--   ,("nextE", [], "Down", "Next move", [|Nothing|])
+--   ,("startE", [Gtk.Control], "Up", "Go to game start", [|Nothing|])
+--   ,("endE", [Gtk.Control], "Down", "Go to game end", [|Nothing|])
+--   ,("currentE", [], "c", "Go to current game position", [|Nothing|])
+--   ,("prevBranchE", [], "Left", "Previous variation", [|Nothing|])
+--   ,("nextBranchE", [], "Right", "Next variation", [|Nothing|])
+--   ,("deleteNodeE", [], "BackSpace", "Remove plan move", [|Nothing|])
+--   ,("deleteLineE", [Gtk.Control], "BackSpace", "Remove plan variation (back to last branch)", [|Nothing|])
+--   ,("deleteAllE", [Gtk.Control, Gtk.Shift], "BackSpace", "Remove all plans", [|Nothing|])
+--   ,("deleteFromHereE", [], "Delete", "Remove plans starting at current position", [|Nothing|])
+--   ,("copyMovelistE", [Gtk.Control], "c", "Copy movelist", [|Nothing|])
+--   ,("toggleFullscreenE", [], "F11", "Toggle fullscreen", [|Nothing|])
+--   ,("dummyGameE", [Gtk.Control], "d", "Dummy game", [|Nothing|])
+--   ]
+
+data Keys a
+  = Keys {sendE :: a,
+          resignE :: a,
+          planE :: a,
+          sharpE :: a,
+          toggleSharpE :: a,
+          clearE :: a,
+          prevE :: a,
+          nextE :: a,
+          startE :: a,
+          endE :: a,
+          currentE :: a,
+          prevBranchE :: a,
+          nextBranchE :: a,
+          deleteNodeE :: a,
+          deleteLineE :: a,
+          deleteAllE :: a,
+          deleteFromHereE :: a,
+          copyMovelistE :: a,
+          toggleFullscreenE :: a,
+          dummyGameE :: a}
+  deriving (Functor, Foldable, Traversable)
+keys ::
+  (?env :: Env) =>
+  Keys (Setting ([Modifier], KeyVal), String,
+        Maybe (Widgets -> AddHandler ()))
+keys
+  = Keys
+      {sendE = ((Setting "send-key")
+                  ([], (keyFromName . fromString) "s"), 
+                "Send move", Just ((`onS` buttonActivated) . sendButton)),
+       resignE = ((Setting "resign-key")
+                    ([Control], (keyFromName . fromString) "r"), 
+                  "Resign", Just ((`onS` buttonActivated) . resignButton)),
+       planE = ((Setting "plan-key")
+                  ([], (keyFromName . fromString) "space"), 
+                "Enter plan move", Nothing),
+       sharpE = ((Setting "sharp-key")
+                   ([], (keyFromName . fromString) "x"), 
+                 "Run Sharp", Nothing),
+       toggleSharpE = ((Setting "toggle-sharp-key")
+                         ([], (keyFromName . fromString) "p"), 
+                       "Pause and unpause Sharp", Nothing),
+       clearE = ((Setting "clear-key")
+                   ([], (keyFromName . fromString) "Escape"), 
+                 "Clear arrows", Nothing),
+       prevE = ((Setting "prev-key")
+                  ([], (keyFromName . fromString) "Up"), 
+                "Previous move", Nothing),
+       nextE = ((Setting "next-key")
+                  ([], (keyFromName . fromString) "Down"), 
+                "Next move", Nothing),
+       startE = ((Setting "start-key")
+                   ([Control], (keyFromName . fromString) "Up"), 
+                 "Go to game start", Nothing),
+       endE = ((Setting "end-key")
+                 ([Control], (keyFromName . fromString) "Down"), 
+               "Go to game end", Nothing),
+       currentE = ((Setting "current-key")
+                     ([], (keyFromName . fromString) "c"), 
+                   "Go to current game position", Nothing),
+       prevBranchE = ((Setting "prev-branch-key")
+                        ([], (keyFromName . fromString) "Left"), 
+                      "Previous variation", Nothing),
+       nextBranchE = ((Setting "next-branch-key")
+                        ([], (keyFromName . fromString) "Right"), 
+                      "Next variation", Nothing),
+       deleteNodeE = ((Setting "delete-node-key")
+                        ([], (keyFromName . fromString) "BackSpace"), 
+                      "Remove plan move", Nothing),
+       deleteLineE = ((Setting "delete-line-key")
+                        ([Control], (keyFromName . fromString) "BackSpace"), 
+                      "Remove plan variation (back to last branch)", Nothing),
+       deleteAllE = ((Setting "delete-all-key")
+                       ([Control, Gtk.Shift], (keyFromName . fromString) "BackSpace"), 
+                     "Remove all plans", Nothing),
+       deleteFromHereE = ((Setting "delete-from-here-key")
+                            ([], (keyFromName . fromString) "Delete"), 
+                          "Remove plans starting at current position", Nothing),
+       copyMovelistE = ((Setting "copy-movelist-key")
+                          ([Control], (keyFromName . fromString) "c"), 
+                        "Copy movelist", Nothing),
+       toggleFullscreenE = ((Setting "toggle-fullscreen-key")
+                              ([], (keyFromName . fromString) "F11"), 
+                            "Toggle fullscreen", Nothing),
+       dummyGameE = ((Setting "dummy-game-key")
+                       ([Control], (keyFromName . fromString) "d"), 
+                     "Dummy game", Nothing)}
 
 anyM :: (Foldable t, Monad m) => (a -> m Bool) -> t a -> m Bool
 anyM f = foldr g (return False)
