@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards, ScopedTypeVariables, ImplicitParams #-}
+{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards, ScopedTypeVariables, ImplicitParams, CPP #-}
 
 module Sharp(SharpVal(..), Eval, flipEval, SharpStatus(..), SharpProcess(status, val), mkSharpProcess, killSharp, killSharps) where
 
@@ -20,7 +20,6 @@ import Data.Traversable
 import Data.Time.Clock
 import System.Process
 import System.Process.Internals
-import System.Posix.Signals
 import System.IO.Unsafe
 import Graphics.UI.Gtk(postGUIAsync)
 import Control.Exception
@@ -30,6 +29,26 @@ import Base
 import Env
 import Settings
 import WidgetValue
+
+#ifndef WindowsBuild
+import System.Posix.Signals
+#else
+-- Near-minimal code to get the build to work on Windows
+import Foreign.C.Types (CInt)
+--import Data.Int (Int32)
+
+type Signal = CInt
+--newtype CPid = CPid Int32
+--type ProcessID = CPid
+--signalProcess :: Signal -> ProcessID -> IO ()
+--isn't actually used except in the non-working  signalPH
+--signalProcess = undefined
+sigCONT :: CInt
+sigCONT = undefined
+sigSTOP :: CInt
+sigSTOP = undefined
+#endif
+
 
 forkBracket :: IO a -> (a -> IO ()) -> (a -> IO c) -> IO a
 forkBracket acquire release work = mask $ \restore -> do
@@ -114,11 +133,17 @@ useSharp u = readMVar sharps >>= f
       t:_ -> getCurrentTime >>= writeIORef t
       _ -> return ()
 
+#ifndef WindowsBuild
 -- !!!!!! shouldn't use internal; or at least figure out version dependency
 signalPH :: ProcessHandle -> Signal -> IO ()
 signalPH (ProcessHandle m _ _) s = readMVar m >>= \case
   OpenHandle pid -> signalProcess s pid
   _ -> return ()
+#else
+signalPH :: ProcessHandle -> Signal -> IO ()
+signalPH = undefined
+#endif
+
 
 killPH :: ProcessHandle -> IO ()
 killPH ph = do
