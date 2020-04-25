@@ -1,7 +1,3 @@
--- -*- Haskell -*-
-
-{-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards, TypeApplications, DeriveGeneric #-}
-
 module Scrape
   (ServerGameInfo(..), getServerGame
   ,BotLadderBot(..), botLadderAll

@@ -1,5 +1,3 @@
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, RankNTypes, MultiWayIf, DeriveGeneric, DeriveAnyClass, PatternGuards #-}
-
 module Base (boardWidth, boardHeight, boardRange, Square, trapSquares, stepsPerMove, Colour(..), flipColour
             ,pieceInfo, nSetupRows, setupRows, Piece, Board, emptyBoard, Move(..), padMove
             ,moveToString, Reason(..), TimeControl(..), parseTimeControl, Arrow
@@ -510,8 +508,11 @@ moveNum :: Int -> String
 moveNum n = show (div (n + 2) 2) ++ if even n then "g" else "s"
 
 readMoveNum :: String -> Maybe Int
-readMoveNum "" = Nothing
-readMoveNum s | last s `elem` "gw" = f =<< readMaybe (init s)
-              | last s `elem` "sb" = (+ 1) <$> (f =<< readMaybe (init s))
-  where f n | n > 0 = Just (2 * (n - 1))
-            | otherwise = Nothing
+readMoveNum = f . dropWhile isSpace . dropWhileEnd isSpace
+  where
+    f "" = Nothing
+    f s | last s `elem` "gw" = g =<< readMaybe (init s)
+        | last s `elem` "sb" = (+ 1) <$> (g =<< readMaybe (init s))
+      where g n | n > 0 = Just (2 * (n - 1))
+                | otherwise = Nothing
+

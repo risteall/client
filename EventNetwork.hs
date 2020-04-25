@@ -1,6 +1,4 @@
--- -*- Haskell -*-
-
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, GADTs, DeriveFunctor, TypeApplications, TemplateHaskell, ImplicitParams #-}
+{-# LANGUAGE TemplateHaskell, ImplicitParams #-}
 
 module EventNetwork
   (Request(..), Update(..)
@@ -37,7 +35,6 @@ import Data.IORef
 import System.Process
 import Data.Functor.Identity
 import System.IO.Unsafe
-import Colour
 import qualified Rank2
 import qualified Rank2.TH
 
@@ -52,6 +49,7 @@ import qualified Node
 import Sharp
 import Settings
 import Shadow
+import Colour
 
 -- press and motion are filtered to be within the board before this is called; release, not
 arrows :: Behavior (Array Colour Bool)

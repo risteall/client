@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, MultiWayIf, TupleSections, ScopedTypeVariables, NamedFieldPuns, ImplicitParams #-}
+{-# LANGUAGE ImplicitParams #-}
 
 module Draw(drawNode, drawEmptyBoard, drawSetupIcon, drawCaptures, smallSquare, squareSize, borderWidth, mkTrapMask) where
 
@@ -16,7 +16,6 @@ import qualified Data.Map.Strict as Map
 import Reactive.Banana
 import Reactive.Banana.Frameworks
 import System.IO.Unsafe
-import Colour
 import Data.AppSettings
 import GHC.Word
 import Data.Array.MArray
@@ -28,6 +27,7 @@ import Match
 import Env
 import Settings
 import Shadow
+import Colour
 
 genDiff :: (a -> b -> Bool) -> [a] -> [b] -> [a]
 genDiff pred as bs = foldl' f as bs

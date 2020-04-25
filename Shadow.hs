@@ -1,5 +1,3 @@
-{-# LANGUAGE TupleSections #-}
-
 module Shadow where
 
 import Data.Array.IArray

@@ -1,5 +1,3 @@
-{-# LANGUAGE TupleSections, NamedFieldPuns, DeriveGeneric, DeriveAnyClass #-}
-
 module Match(MoveSet(..), currentMove, makeMoveSet, setCapture, toggleCapture) where
 
 import Data.Function

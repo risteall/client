@@ -1,5 +1,3 @@
-{-# LANGUAGE MultiParamTypeClasses, DeriveGeneric, ScopedTypeVariables, DataKinds, KindSignatures, GADTs, FlexibleInstances #-}
-
 module Misc where
 
 import Text.Printf

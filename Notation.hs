@@ -1,5 +1,3 @@
-{-# LANGUAGE TupleSections, RankNTypes, DeriveFunctor #-}
-
 module Notation where
 
 import Data.List.Split

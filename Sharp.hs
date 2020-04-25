@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, RecursiveDo, NamedFieldPuns, TupleSections, RecordWildCards, ScopedTypeVariables, ImplicitParams, CPP #-}
+{-# LANGUAGE ImplicitParams, CPP #-}
 
 module Sharp(SharpVal(..), Eval, flipEval, SharpStatus(..), SharpProcess(status, val), mkSharpProcess, killSharp, killSharps) where
 

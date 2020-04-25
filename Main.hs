@@ -1,6 +1,6 @@
 -- -*- Haskell -*-
 
-{-# LANGUAGE LambdaCase, TupleSections, ScopedTypeVariables, NamedFieldPuns, MultiWayIf, PatternGuards, RecursiveDo, DeriveGeneric, DeriveAnyClass, RecordWildCards, StandaloneDeriving, CPP, DataKinds, TypeApplications, DeriveTraversable, DeriveLift, TemplateHaskell, ImplicitParams, FlexibleInstances, RankNTypes #-}
+{-# LANGUAGE CPP, DataKinds, DeriveLift, TemplateHaskell, ImplicitParams #-}
 
 import Data.Array.IArray
 import Graphics.UI.Gtk hiding (get, set, Shift, Arrow, rectangle, on)

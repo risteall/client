@@ -1,9 +1,8 @@
-{-# LANGUAGE TemplateHaskell, ScopedTypeVariables, FlexibleInstances #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Settings where
 
 import Data.AppSettings
-import Colour
 import qualified Data.Map.Strict as Map
 import Control.Monad.State.Lazy
 import Graphics.UI.Gtk
@@ -16,6 +15,7 @@ import Data.Bifunctor
 import Templates
 import Misc
 import WidgetValue
+import Colour
 
 settingsPlace = AutoFromAppName "nosteps"
 

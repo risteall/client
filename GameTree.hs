@@ -1,7 +1,3 @@
--- -*- Haskell -*-
-
-{-# LANGUAGE LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards #-}
-
 module GameTree(derefNode, leftDepth, treeDepth,
                 GameTree(tree, currentPos, viewPos), mkGameTree, pathEnd,
                 select, nextBranch, prevBranch,

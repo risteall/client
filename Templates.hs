@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, TemplateHaskell, TupleSections, StandaloneDeriving, DeriveLift, ImplicitParams #-}
+{-# LANGUAGE TemplateHaskell, DeriveLift, ImplicitParams #-}
 
 module Templates where
 

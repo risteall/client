@@ -1,4 +1,4 @@
-{-# LANGUAGE NamedFieldPuns, LambdaCase, DataKinds, GADTs, ScopedTypeVariables, KindSignatures, RankNTypes, TypeApplications, RecursiveDo, ImplicitParams #-}
+{-# LANGUAGE DataKinds, KindSignatures, ImplicitParams #-}
 
 module Node where
 

@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, FunctionalDependencies, DefaultSignatures, FlexibleInstances, DeriveGeneric, FlexibleContexts, ScopedTypeVariables, LambdaCase, DataKinds, KindSignatures, GADTs #-}
+{-# LANGUAGE ExistentialQuantification, FunctionalDependencies, DefaultSignatures, DataKinds, KindSignatures #-}
 
 module WidgetValue where
 
