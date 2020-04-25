@@ -23,9 +23,18 @@ Flag WindowsBuild
 
 executable nosteps
   main-is:             Main.hs
-  other-modules:       Base, Colour, Draw, Env, EventNetwork, GameTree, Match, Misc, Node, Notation, Protocol, Scrape, Settings, Shadow, Sharp, Templates, WidgetValue, Paths_nosteps
-  default-extensions:  LambdaCase, TupleSections, NamedFieldPuns, RecordWildCards, MultiWayIf, DeriveTraversable, DeriveGeneric, RankNTypes, StandaloneDeriving, ScopedTypeVariables, TypeApplications, FlexibleInstances, FlexibleContexts, GADTs, MultiParamTypeClasses, RecursiveDo, DeriveAnyClass
-  other-extensions:    CPP, DataKinds, KindSignatures, DeriveLift, TemplateHaskell, ImplicitParams, ExistentialQuantification, FunctionalDependencies, DefaultSignatures
+  other-modules:       Base, Behavior, Colour, Draw, Env, EventNetwork, GameTree, Match, Misc, Node, Notation, Protocol, Scrape, Settings, Shadow, Sharp, Templates, Types, WidgetValue, Paths_nosteps
+  default-extensions:
+    LambdaCase, TupleSections, MultiWayIf, RecursiveDo,
+    GADTs,
+    NamedFieldPuns, RecordWildCards,
+    DeriveTraversable, DeriveGeneric, DeriveAnyClass, StandaloneDeriving,
+    FunctionalDependencies, DefaultSignatures, FlexibleInstances, FlexibleContexts,
+    ScopedTypeVariables,
+    TypeApplications,
+    RankNTypes
+  other-extensions:
+    CPP, DataKinds, KindSignatures, DeriveLift, TemplateHaskell, ImplicitParams, ExistentialQuantification
   build-depends:
     base >=4.10,
     cairo >=0.13,

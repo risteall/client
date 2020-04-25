@@ -28,6 +28,7 @@ import Env
 import Settings
 import Shadow
 import Colour
+import Behavior
 
 genDiff :: (a -> b -> Bool) -> [a] -> [b] -> [a]
 genDiff pred as bs = foldl' f as bs
@@ -424,7 +425,7 @@ drawSetup c board sb squareMap flash conf canvas = do
 
   drawSetupPieces c board sb squareMap conf
 
-drawNode :: (?env :: Env) => Maybe Node.SomeNode -> Behavior (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> Bool -> Conf -> DrawingArea -> Render ())
+drawNode :: (?env :: Env) => Maybe Node.SomeNode -> Behavior' (ShadowBoard -> [Arrow] -> Map Square Bool -> Maybe MoveSet -> Array Colour Bool -> (Square -> Square) -> Bool -> Conf -> DrawingArea -> Render ())
 drawNode node
   | Node.setupPhase node
   = fromMaybe (error "wazzock")

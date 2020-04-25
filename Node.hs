@@ -23,6 +23,7 @@ import GameTree
 import Sharp
 import Env
 import Settings
+import Behavior
 
 data RegularContent = RegularContent
   {move :: GenMove
@@ -161,34 +162,34 @@ regularMove = either (Just . move) (const Nothing) . getContentR
 
 ----------------------------------------------------------------
 
-position :: Maybe SomeNode -> Behavior Position
+position :: Maybe SomeNode -> Behavior' Position
 position Nothing = pure newPosition
 position (Just n@(SomeNode n')) = case getContentR n of
   Left r -> pure (next r)
-  Right s -> maybe (prev n') sharpPosition <$> val s
+  Right s -> fromBehavior $ maybe (prev n') sharpPosition <$> val s
 
-board :: Maybe SomeNode -> Behavior Board
+board :: Maybe SomeNode -> Behavior' Board
 board = fmap posBoard . position
 
-getMove :: Maybe SomeNode -> Behavior (Maybe GenMove)
+getMove :: Maybe SomeNode -> Behavior' (Maybe GenMove)
 getMove Nothing = pure Nothing
 getMove (Just n) = case getContentR n of
   Left r -> pure (Just (move r))
-  Right s -> fmap (fmap (Right . sharpMove)) (val s)
+  Right s -> fromBehavior $ fmap (fmap (Right . sharpMove)) (val s)
 
-movelistEntry :: SomeNode -> Behavior String
+movelistEntry :: SomeNode -> Behavior' String
 movelistEntry n@(SomeNode n') = case getContentS n of
     Left r -> pure $ maybe "" showTreeDuration (fst <$> times r)
-    Right s -> maybe "" g <$> val s
+    Right s -> fromBehavior $ maybe "" g <$> val s
   where
     g v = printf "%s (d%s)"
                  (show $ (case posToMove (prev n') of Gold -> id; Silver -> flipEval) (sharpEval v))
                  (sharpDepth v)
 
-nodeColour :: (?env :: Env) => SomeNode -> Behavior (Maybe (IO (RGB Double)))
+nodeColour :: (?env :: Env) => SomeNode -> Behavior' (Maybe (IO (RGB Double)))
 nodeColour n = case getContentS n of
     Left _ -> pure Nothing
-    Right s -> Just . g <$> status s
+    Right s -> fromBehavior $ Just . g <$> status s
   where
     g Running = getConf runningSharpColour
     g Paused = getConf pausedSharpColour
@@ -260,3 +261,9 @@ killNode :: SomeNode -> IO ()
 killNode n = case Node.getContentS n of
   Left _ -> return ()
   Right s -> killSharp s
+
+sharpProcess :: Maybe SomeNode -> Maybe SharpProcess
+sharpProcess (Just n) = case getContentS n of
+  Left _ -> Nothing
+  Right s -> Just s
+sharpProcess _ = Nothing

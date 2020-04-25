@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, FunctionalDependencies, DefaultSignatures, DataKinds, KindSignatures #-}
+{-# LANGUAGE ExistentialQuantification, DataKinds, KindSignatures #-}
 
 module WidgetValue where
 

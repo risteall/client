@@ -50,6 +50,8 @@ import Sharp
 import Settings
 import Shadow
 import Colour
+import Behavior
+import Types
 
 -- press and motion are filtered to be within the board before this is called; release, not
 arrows :: Behavior (Array Colour Bool)
@@ -141,34 +143,6 @@ moveSet board player as lts eToggle = do
 
 ----------------------------------------------------------------
 
-data Request = RequestStart | RequestMove GenMove | RequestResign Colour
-
-data Update = UpdateStart
-            | UpdateMove (GenMove, Maybe Int)
-            | UpdateResult (Colour, Reason)
-            | UpdateClock (Colour, Int)
-            | UpdateUsed {playerUsed :: Maybe (Colour, Int), gameUsed :: Maybe Int, timeDiff :: Maybe Int}
---            | UpdateUsed (Colour, Int)
-  --          | UpdateGameUsed Int
-              deriving Show
-
-data GameState = GameState
-  {started :: Bool
-  ,position :: Position
-  ,result :: Maybe (Colour, Reason)
-  } deriving Show
-
-newGameState = GameState{started = False, position = newPosition, result = Nothing}
-
-updateGameState gs UpdateStart = gs{started = True}
-updateGameState gs (UpdateMove (m,_)) = either (error . printf "Illegal move from server (%s)")
-                                               (\p -> gs{position = p})
-                                               $ playGenMove (position gs) m
-updateGameState gs (UpdateResult x) = gs{result = Just x}
-updateGameState gs _ = gs
-
-----------------------------------------------------------------
-
 treeMargin = 15 :: Double
 treeRadius = 3 :: Double
 treeXGap = 10 :: Double
@@ -194,14 +168,14 @@ placeTree forest currentPos = f [([], forest)] 0 (Map.empty, 0)
         gap = if nGaps == 0 then 0 else width / nGaps
 
 drawTree :: (?env :: Env) => GameTree Node.SomeNode -> Map Int [([Int], Double)] -> Behavior (Render ())
-drawTree gt offsets = top <$> setColour Nothing [] <*> f (tree gt) []
+drawTree gt offsets = toBehavior $ top <$> setColour Nothing [] <*> f (tree gt) []
   where
     top a b = do
       a
       drawNode treeMargin treeMargin []
       b
 
-    f :: Forest Node.SomeNode -> [Int] -> Behavior (Render ())
+    f :: Forest Node.SomeNode -> [Int] -> Behavior' (Render ())
     f forest ix = fmap sequence_ $ sequenceA $ zipWith g forest [0..]
       where
         (x, y) = getPos ix
@@ -223,7 +197,7 @@ drawTree gt offsets = top <$> setColour Nothing [] <*> f (tree gt) []
       when (ix == viewPos gt) $ do
         arc x y (treeRadius * 1.8) 0 (2 * pi)
         stroke
-    setColour :: Maybe Node.SomeNode -> [Int] -> Behavior (Render ())
+    setColour :: Maybe Node.SomeNode -> [Int] -> Behavior' (Render ())
     setColour node ix = (>>= flip setSourceColourAlpha alpha) . liftIO <$> colour  -- !!!!!!!!!!!
       where
         colour | ix == currentPos gt = pure (getConf currentColour)
@@ -234,13 +208,13 @@ drawTree gt offsets = top <$> setColour Nothing [] <*> f (tree gt) []
         alpha = if isPrefixOf ix (pathEnd gt) then 1 else 0.5
 
 drawMoves :: (?env :: Env) => GameTree Node.SomeNode -> Double -> Behavior (DrawingArea -> Render ())
-drawMoves gt treeWidth = g <$> sequenceA (zipWith f (tail (inits (pathEnd gt))) [0..])
+drawMoves gt treeWidth = toBehavior $ g <$> sequenceA (zipWith f (tail (inits (pathEnd gt))) [0..])
   where
     x = treeWidth + treeMargin
     y n = treeMargin + treeYGap * fromIntegral n
     yText n = y n + treeYGap * 0.85
 
-    f :: [Int] -> Int -> Behavior (Double -> Render (), Double -> Double -> Render (), String, String)
+    f :: [Int] -> Int -> Behavior' (Double -> Render (), Double -> Double -> Render (), String, String)
     f ix n = (\col s -> (bg1, bg2 col, moveNum n, s)) <$> Node.nodeColour this <*> Node.movelistEntry this
       where
         Just this = derefNode (tree gt) ix
@@ -442,22 +416,6 @@ onChanges = (>>= reactimate') . changes
 flipSquare :: Square -> Square
 flipSquare (x, y) = (boardWidth - 1 - x, boardHeight - 1 - y)
 
--- per-game constants, as seen by the event-handling function
-data GameParams = GameParams
-  {names :: Array Colour String
-  ,ratings :: Array Colour (Maybe Int)
-  ,isUser :: Array Colour Bool
-  ,timeControl :: TimeControl
-  ,rated :: Bool
-  }
-
-emptyGameParams :: GameParams
-emptyGameParams = GameParams (colourArray (repeat ""))
-                             (colourArray (repeat Nothing))
-                             (colourArray (repeat False))
-                             (fromJust (parseTimeControl "1d/30d/100/0/10m/0"))
-                             False
-
 buttonAction :: Button -> Event () -> Behavior (Maybe a) -> MomentIO (Event a)
 buttonAction b e x = do
   onChanges $ widgetSetSensitive b <$> (isJust <$> x)
@@ -578,20 +536,12 @@ clocks gameState eUpdate eTick params = do
                             (timeUsed params player bMinDiff clocksRun (isDran player) eUpdate eTick),
           gameLabel <$> gUsed)
 
---------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------
 
 reactimateSwitch :: Event (Behavior (IO ())) -> MomentIO ()
 reactimateSwitch = switchB (pure undefined) >=> changes >=> reactimate'
 
-data NewGame = forall a. Eq a => NewGame
-  {params :: GameParams
-  ,initialTree :: Forest Node.SomeNode
-  ,request :: Either (Request -> IO ()) (Request -> IO a, MomentIO (Event a))
-  ,updates :: MomentIO (Behavior GameState, Event Update)
-  ,cleanup :: IO ()
-  }
-
---------------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------
 
 nextMove
   :: (?env :: Env)
@@ -657,7 +607,7 @@ input events visible flipped eClear flash bConf eNode = mdo
       (e2, e3) = RB.split $ f <$> visible <*> bMoveSet <@> eLeft'
     return (e3, e1, e2)
 
-  view <- switchB (pure newPosition) (Node.position <$> eNode)
+  view <- switchB (pure newPosition) (toBehavior . Node.position <$> eNode)
 
   (bArrows, liveArrow, eInput) <- do
     arrows visible (posBoard <$> view) eArrowLeft (squareMap <@> release events) (squareMap <@> motion events) eClear
@@ -686,7 +636,7 @@ input events visible flipped eClear flash bConf eNode = mdo
   let
     f :: Maybe Node.SomeNode -> Behavior (IO ())
     f node = get setDrawBoard
-               <$> (drawNode node <*> shadow <*> ((\as la -> maybe as (:as) la) <$> bArrows <*> liveArrow) <*> liveTraps <*> bMoveSet <*> visible <*> squareMap <*> flash <*> bConf)
+               <$> (toBehavior (drawNode node) <*> shadow <*> ((\as la -> maybe as (:as) la) <$> bArrows <*> liveArrow) <*> liveTraps <*> bMoveSet <*> visible <*> squareMap <*> flash <*> bConf)
     in reactimateSwitch $ f <$> eNode
 
   let setupLabelsB = (\(ShadowBoard _ remaining _) -> map show $ elems remaining) <$> shadow
@@ -712,7 +662,7 @@ input events visible flipped eClear flash bConf eNode = mdo
 
   return (bMove, eInput, haveInput)
 
---------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------
 
 roundTripTimes :: Eq b => Event b -> Event b -> MomentIO (Event NominalDiffTime)
 roundTripTimes x y = do
@@ -804,7 +754,7 @@ requests events eNewGame gameState bTree nextMove params = mdo
 
   onChanges $ buttonSetLabel (get (resignButton . widgets)) . (\b -> if b then "Resigning" else "Resign") <$> resignStatus
 
---------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------
   
 -- includes clocks
 move :: Behavior GameState
@@ -865,43 +815,7 @@ doClocks eNewGame bParams gameState eUpdate eTick flipped = do
 
   return bClocks
 
---------------------------------------------------------------------------------------------------------------------------------  
-
-data Events f = Events
-  {newGameE :: f NewGame
-  ,leftPress :: f (Square, (Double, Double))
-  ,rightPress :: f Square
-  ,release :: f Square
-  ,motion :: f Square
-  ,flipE :: f ()
-  ,tick :: f ()
-  ,blindMode :: f (Bool, Bool)
-  ,setupIconsE :: [f ()]
-  ,treePress :: f (Double, Double)
-  ,sendE :: f ()
-  ,resignE :: f ()
-  ,sharpE :: f ()
-  ,planE :: f ()
-  ,clearE :: f ()
-  ,prevE :: f ()
-  ,nextE :: f ()
-  ,startE :: f ()
-  ,endE :: f ()
-  ,currentE :: f ()
-  ,deleteNodeE :: f ()
-  ,deleteLineE :: f ()
-  ,deleteAllE :: f ()
-  ,prevBranchE :: f ()
-  ,nextBranchE :: f ()
-  ,deleteFromHereE :: f ()
-  ,confE :: f Conf
-  ,toggleSharpE :: f ()
-  ,copyMovelistE :: f ()
-  }
-
-Rank2.TH.deriveFunctor ''Events
-Rank2.TH.deriveFoldable ''Events
-Rank2.TH.deriveTraversable ''Events
+------------------------------------------------------------------------------------------------
 
 zipB :: Behavior a -> MomentIO (Event (a, a))
 zipB b = do
@@ -1003,11 +917,11 @@ network ahs = mdo
 
     -- TODO: move number, other notations, multiple moves
   do
-    bCopy <- switchB (pure undefined) $ fmap (maybe "" showGenMove) . Node.getMove <$> eNode
+    bCopy <- switchB (pure undefined) $ toBehavior . fmap (maybe "" showGenMove) . Node.getMove <$> eNode
     let f s = clipboardGet selectionClipboard >>= flip clipboardSetText s
       in reactimate $ f <$> (bCopy <@ copyMovelistE events)
 
---------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------
 
 newGameRef = unsafePerformIO $ newIORef undefined
 

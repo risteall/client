@@ -1209,6 +1209,7 @@ main = do
   liveGames <- newEmptyMVar
   postalGames <- newEmptyMVar
   recentGames <- newEmptyMVar
+
   botLadderBotsRef <- newTVarIO (return [])
   gameroomRef <- newTVarIO Nothing
 
