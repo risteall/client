@@ -356,7 +356,7 @@ getUpdates response started updateChan = do
                                     $ map (,Nothing) (init moves) ++ [(last moves, read <$> lookup "lastmoveused" response)]
 
   finished <- case lookup "result" response of
-    Just [c1,c2] | Just r <- readReason c2 -> do
+    Just [c1,c2] | Just r <- readReason [c2] -> do
       send $ UpdateResult $ (if elem c1 "wg" then Gold else Silver, r)
       return True
     _ -> do
@@ -682,10 +682,10 @@ expandGame tc moves = snd <$> mapAccumLM f (Nothing, Just (initialReserve tc)) m
 viewGame :: (?env :: Env) => Int -> IO () -> IO ()
 viewGame n killDialog = do
   background (withStatus "Fetching game" (getServerGame n)) $ \case
-    Nothing -> return ()
-    Just sgi -> do
+    Left err -> errorMessage err
+    Right sgi -> do
       killDialog
-      let nodes = either error id $ expandGame (sgiTimeControl sgi) (map (second Just) (sgiMoves sgi))
+      let nodes = either error id $ expandGame (sgiTimeControl sgi) (sgiMoves sgi)
           pos = Node.regularPosition $ if null nodes then Nothing else Just (last nodes)
       newGame' GameParams{names = sgiNames sgi
                          ,ratings = Just <$> sgiRatings sgi

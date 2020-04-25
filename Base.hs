@@ -7,8 +7,8 @@ module Base (boardWidth, boardHeight, boardRange, Square, trapSquares, stepsPerM
             ,moveToCaptureSet, stringToBoard, Step(..), legalDrag, singleStepsFrom, dragsFrom, addArrows, appendMoves, nSteps
             ,containsCapture, charToPiece, Direction(..), stringToSquare, updateReserve, readReason, harlog
             ,GenMove, showGenMove, Position(posDepth, posBoard), newPosition, readGenMove, playGenMove, timeAvailable, posToMove
-            ,posSetupPhase, charToColour, colourToServerChar, colourArray, mapColourArray, PaddedStep, destination, dirToChar
-            ,moveNum
+            ,posSetupPhase, charToColour, readColour, colourToServerChar, colourArray, mapColourArray, PaddedStep, destination, dirToChar
+            ,moveNum, readMoveNum
             )
   where
 
@@ -52,6 +52,9 @@ flipColour Silver = Gold
 charToColour c | elem c "wg" = Just Gold
                | elem c "bs" = Just Silver
                | otherwise = Nothing
+
+readColour [c] = charToColour c
+readColour _ = Nothing
 
 colourToServerChar Gold = 'w'
 colourToServerChar Silver = 'b'
@@ -391,15 +394,15 @@ moveToCaptureSet (Move move) = foldl' f Map.empty move
 
 data Reason = Goal | Elimination | Immobilization | Timeout | Resignation | IllegalMove | Score | Forfeit deriving Generic
 
-readReason :: Char -> Maybe Reason
-readReason 'g' = Just Goal
-readReason 'e' = Just Elimination
-readReason 'm' = Just Immobilization
-readReason 't' = Just Timeout
-readReason 'r' = Just Resignation
-readReason 'i' = Just IllegalMove
-readReason 's' = Just Score
-readReason 'f' = Just Forfeit
+readReason :: String -> Maybe Reason
+readReason "g" = Just Goal
+readReason "e" = Just Elimination
+readReason "m" = Just Immobilization
+readReason "t" = Just Timeout
+readReason "r" = Just Resignation
+readReason "i" = Just IllegalMove
+readReason "s" = Just Score
+readReason "f" = Just Forfeit
 readReason _ = Nothing
 
 instance Show Reason where
@@ -505,3 +508,10 @@ mapColourArray f = listArray (Gold,Silver) $ map f [Gold,Silver]
 
 moveNum :: Int -> String
 moveNum n = show (div (n + 2) 2) ++ if even n then "g" else "s"
+
+readMoveNum :: String -> Maybe Int
+readMoveNum "" = Nothing
+readMoveNum s | last s `elem` "gw" = f =<< readMaybe (init s)
+              | last s `elem` "sb" = (+ 1) <$> (f =<< readMaybe (init s))
+  where f n | n > 0 = Just (2 * (n - 1))
+            | otherwise = Nothing

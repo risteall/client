@@ -33,8 +33,8 @@ data GameJSON = GameJSON
   ,rated :: String
   ,result :: String
   ,termination :: String
---  ,movelist :: String
-  ,events :: String
+  ,movelist :: String
+  ,events :: Maybe String
   } deriving Generic
 
 instance FromJSON GameJSON
@@ -50,23 +50,30 @@ eventsLine s = do
   n <- readMaybe a
   return (n, b)
 
-moveTimes :: [(Int, String)] -> Maybe [(GenMove, Int)]
-moveTimes events
-  | and $ zipWith (==) (map (fmap fst . snd) l) (Nothing : map (Just . moveNum) [0..])
-  = Just $ zip moves times'
-  | otherwise = Nothing
+adjacentMove :: Maybe String -> Maybe String -> Maybe Int
+adjacentMove Nothing (Just s)
+  | Just 0 <- readMoveNum s
+  = Just 0
+adjacentMove (Just s1) (Just s2)
+  | Just n1 <- readMoveNum s1
+  , Just n2 <- readMoveNum s2
+  , n2 == n1 + 1
+  = Just n2
+adjacentMove _ _ = Nothing
+
+moveTime :: (Int, Maybe String) -> (Int, Maybe String) -> Maybe (Int, Int)
+moveTime (t1, m1) (t2, m2) = (, t2 - t1) <$> adjacentMove m1 m2
+
+moveTimes :: [(Int, String)] -> [(Int, Int)]
+moveTimes events = catMaybes $ zipWith moveTime l (tail l)
   where
-    r1 = mkRegex "start.*received"
-    r2 = mkRegex "move (.*) received.*\\[(.*)\\]"
+    r1 = mkRegex "start.*from g"
+    r2 = mkRegex "move (.+) received"
     f s | isJust (matchRegex r1 s) = Just Nothing
-        | Just [n, m] <- matchRegex r2 s
-        , Just m' <- readGenMove m
-        = Just (Just (n, m'))
+        | Just [n] <- matchRegex r2 s
+        = Just (Just n)
         | otherwise = Nothing
     l = mapMaybe (_2 f) events
-    moves = mapMaybe (fmap snd . snd) l
-    times = map fst l
-    times' = zipWith (-) (tail times) times
 
 data ServerGameInfo = ServerGameInfo
   {sgiNames :: Array Colour String
@@ -74,34 +81,60 @@ data ServerGameInfo = ServerGameInfo
   ,sgiTimeControl :: TimeControl
   ,sgiRated :: Bool
   ,sgiResult :: (Colour, Reason)
-  ,sgiMoves :: [(GenMove, Int)]
+  ,sgiMoves :: [(GenMove, Maybe Int)]
   } deriving Show
 
-readJSON :: GameJSON -> Maybe ServerGameInfo
+readMoves :: String -> Either String [GenMove]
+readMoves s = case lines s of
+    [] -> Right []
+    a | isJust (readMoveNum (last a)) -> traverse f (init a)
+      | otherwise -> traverse f a
+  where f x = maybe (Left ("Invalid move: " ++ x)) Right (readGenMove x)
+
+zipMoveTime :: [a] -> [(Int, b)] -> [(a, Maybe b)]
+zipMoveTime a b = f (zip a [0..]) b
+  where
+    f a [] = map ((, Nothing) . fst) a
+    f [] _ = []
+    f ((a,n):as) ((n',b):bs)
+      | n == n' = (a, Just b) : f as bs
+      | otherwise = (a, Nothing) : f as bs
+
+readJSON :: GameJSON -> Either String ServerGameInfo
 readJSON GameJSON{..} = do
-  gr <- readMaybe grating
-  sr <- readMaybe srating
-  tc <- parseTimeControl timecontrol
+  gr <- maybe (Left ("Invalid rating: " ++ grating)) Right
+    $ readMaybe grating
+  sr <- maybe (Left ("Invalid rating: " ++ srating)) Right
+    $ readMaybe srating
+  tc <- maybe (Left ("Invalid time control: " ++ timecontrol)) Right
+    $ parseTimeControl timecontrol
   let rated' = rated == "1"
-  result' <- case result of
-    [c] -> charToColour c
-    _ -> Nothing
-  reason <- case termination of
-    [c] -> readReason c
-    _ -> Nothing
-  mt <- moveTimes $ mapMaybe eventsLine (lines events)
+  result' <- maybe (Left ("Unknown result code: " ++ result)) Right
+    $ readColour result
+  reason <- maybe (Left ("Unknown termination code: " ++ termination)) Right
+    $ readReason termination
+  let times = moveTimes $ mapMaybe eventsLine (lines (fromMaybe "" events))
+  moves <- readMoves movelist
   return ServerGameInfo
     {sgiNames = colourArray [gusername, susername]
     ,sgiRatings = colourArray [gr, sr]
     ,sgiTimeControl = tc
     ,sgiRated = rated'
     ,sgiResult = (result', reason)
-    ,sgiMoves = mt
+    ,sgiMoves = zipMoveTime moves times
     }
 
-getServerGame :: Int -> IO (Maybe ServerGameInfo)
-getServerGame n = (>>= readJSON) <$> getGameJSON n
-  
+{-
+  Still fails on:
+    Resign and takeback in the movelist
+    Unrecognised codes e.g. a, d, p
+
+  Nonexistent games should be (and aren't) distinguished from parse failures
+-}
+getServerGame :: Int -> IO (Either String ServerGameInfo)
+getServerGame n = ((>>= readJSON) . maybe (Left ("Can't parse game " ++ show n)) Right)
+                    <$> getGameJSON n
+
 --   s <- getResponseBody =<< (simpleHTTP $ getRequest $ "http://arimaa.com/arimaa/gameroom/opengamewin.cgi?gameid=" ++ show n)
 --   let f s = case matchRegex (mkRegex "arimaa\\.vars\\.(.*)=\"(.*)\"") s of
 --         Just [a, b] -> Just (a, b)
@@ -213,11 +246,7 @@ strings t = [s | TagLeaf (TagText s) <- universeTree t]
 reason :: TagTree String -> Maybe Reason
 reason (TagBranch "td" _ l)
   | [s] <- strings l
-  = f s
-  where
-    f s = case filter (not . isSpace) s of
-      [c] -> readReason c
-      _ -> Nothing
+  = readReason $ filter (not . isSpace) s
 reason _ = Nothing
 
 moveCount :: TagTree String -> Maybe Int
