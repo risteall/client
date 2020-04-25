@@ -1,3 +1,10 @@
 .stack-work
 stack.yaml
 stack.yaml.lock
+*.hi
+*.o
+*.dyn*
+*~
+*test*
+*Test*
+nosteps
